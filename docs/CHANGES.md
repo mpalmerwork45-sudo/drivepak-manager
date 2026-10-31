@@ -1,5 +1,22 @@
 # Changes
 
+## 1.0.3
+
+* Added an explicit image-file-to-card workflow, available without opening an
+  editor session. The source is read-only; the exact source and destination are
+  named in the final confirmation.
+* Backup-first remains the default. Clearing the backup checkbox enables direct
+  writing with a no-recovery-backup warning and one final confirmation. There is
+  no Save dialog in this mode. CLI automation supports explicit `--no-backup`.
+* Both paths share size checks, source stability checks, protected/exclusive
+  device access, identity revalidation, flushing and independent device readback.
+  Cancellation or failure remains incomplete/unverified with no automatic retry.
+* Backup Save dialogs now identify their purpose and suggest a distinct
+  `BACKUP-before-…` filename. Selecting the source image as backup is rejected.
+* Direct writes require the updated 1.0.3 helper. A capability check explains how
+  to update an older helper before elevation or opening a device. The privileged
+  endpoint requires an explicit boolean no-backup acknowledgement.
+
 ## 1.0.2
 
 * Corrected an overly strict default-drive check that disabled all image editing

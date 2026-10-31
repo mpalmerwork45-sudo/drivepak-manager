@@ -10,6 +10,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import zipfile
 
 from .backup import verify_backup
 from .devices import validate
@@ -31,9 +32,20 @@ def helper_installed():
     return True
 
 
-def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None):
+def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, *, acknowledge_no_backup=False):
     if not helper_installed():
         raise SafetyError("Linux helper is not installed/trusted. Build with tools/build_linux.sh, then install the generated helper using the documented administrator command. The GUI must remain unprivileged.")
+    if operation == "write-direct":
+        if acknowledge_no_backup is not True:
+            raise SafetyError("Direct writing requires explicit acknowledgement that no backup will be created.")
+        try:
+            with zipfile.ZipFile(HELPER.with_name("drivepak-manager-helper.pyz")) as archive:
+                info = archive.getinfo("helper-capabilities.json")
+                capability = json.loads(archive.read(info)) if info.file_size <= 4096 else None
+                if not isinstance(capability, dict) or capability.get("protocol") != 1 or "write-direct" not in capability.get("operations", []):
+                    raise ValueError("direct operation unavailable")
+        except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile) as e:
+            raise SafetyError("The installed helper needs updating for direct writes. Run the current distribution's install-helper.sh with sudo, then retry. No device was opened.") from e
     with tempfile.TemporaryDirectory(prefix="dpm-") as directory:
         endpoint = str(Path(directory) / "control")
         with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as listener:
@@ -63,6 +75,8 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None):
                     request = {"operation": operation, "expected": expected}
                     if manifest is not None:
                         request["manifest"] = manifest
+                    if operation == "write-direct":
+                        request["acknowledge_no_backup"] = True
                     connection.sendmsg([json.dumps(request).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))])
                     sent_cancel = False
                     while True:
@@ -116,3 +130,12 @@ def write_card(device, source, recovery_backup, progress=None, cancel=None):
     manifest = verify_backup(recovery_backup, progress, cancel)
     with open(source, "rb", buffering=0) as src, open(recovery_backup, "rb", buffering=0) as backup:
         return invoke("write", device.identity, [src.fileno(), backup.fileno()], manifest, progress, cancel)
+
+
+def write_card_direct(device, source, progress=None, cancel=None, *, acknowledge_no_backup=False):
+    if acknowledge_no_backup is not True:
+        raise SafetyError("Direct writing requires explicit acknowledgement that no recovery backup will be created.")
+    validate(device.identity, [source])
+    with open(source, "rb", buffering=0) as src:
+        return invoke("write-direct", device.identity, [src.fileno()], progress=progress, cancel=cancel,
+                      acknowledge_no_backup=True)

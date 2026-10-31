@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QFileDialog, QDialog
 
@@ -215,7 +217,10 @@ def test_gui_file_partition_and_os9_workflows(qtbot, tmp_path, os9_volume, monke
     monkeypatch.setattr(QInputDialog, "getText", lambda *a, **kw: ("RENAMED.BIN", True))
     window.actions["rename_file"].trigger()
     settle(qtbot, window)
-    assert window.files.item(0, 0).text() == "RENAMED.BIN"
+    # The mutation refresh chains a separate directory-read worker. Wait for
+    # its rendered outcome, rather than assuming the first idle signal is final.
+    qtbot.waitUntil(lambda: window.files.item(0, 0) is not None and window.files.item(0, 0).text() == "RENAMED.BIN", timeout=15000)
+    assert not errors
     window.files.selectRow(0)
     extract_dir = tmp_path / "extract"
     extract_dir.mkdir()
@@ -280,7 +285,7 @@ def test_gui_backup_edit_write_full_workflow_with_simulated_card(qtbot, card, tm
     monkeypatch.setattr(window, "choose_device", lambda title: device)
     backups = [tmp_path / "initial.img", tmp_path / "current-before-write.img"]
     destinations = iter(backups)
-    monkeypatch.setattr(window, "backup_destination", lambda device: str(next(destinations)))
+    monkeypatch.setattr(window, "backup_destination", lambda device, **kw: str(next(destinations)))
     monkeypatch.setattr(gui, "backup_card", lambda d, out, work, progress, cancel: sim.backup(out, progress, cancel))
     monkeypatch.setattr(gui, "write_card", lambda d, source, backup, progress, cancel: sim.write(source, backup, progress, cancel))
     monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
@@ -299,4 +304,50 @@ def test_gui_backup_edit_write_full_workflow_with_simulated_card(qtbot, card, tm
     assert card.read_bytes() == window.session.working.read_bytes()
     assert all(b.read_bytes() == before for b in backups)
     assert verify_backup(backups[0]) and verify_backup(backups[1]) and not errors
+    window.close()
+
+
+def test_direct_file_to_card_has_no_save_dialog_and_keeps_source(qtbot, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from drivepak_manager import gui
+    from drivepak_manager.backup import SimulatedDevice
+    source = tmp_path / "NEWIMAGE.img"
+    source.write_bytes(b"\x47" * 512)
+    target = tmp_path / "simulated-card.bin"
+    before = b"\x19" * 4096
+    target.write_bytes(before)
+    sim = SimulatedDevice(target)
+    device = SimpleNamespace(capacity=sim.capacity, model="Simulated USB reader", path="/dev/SIMULATED", serial="SIM-001", diskseq="1", wwn="")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.session is None and window.actions["write"].isEnabled()
+    monkeypatch.setattr(window, "choose_device", lambda title: device)
+    monkeypatch.setattr(window, "backup_destination", lambda *a, **kw: pytest.fail("Direct write asked to save a backup"))
+    monkeypatch.setattr(gui, "backup_card", lambda *a, **kw: pytest.fail("Direct write started a backup"))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **kw: pytest.fail("Direct write opened a Save dialog"))
+    def choose_options(dialog):
+        assert dialog.backup_first.isChecked()
+        dialog.source.setText(str(source))
+        dialog.backup_first.setChecked(False)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(gui.WriteOptionsDialog, "exec", choose_options)
+    confirmations = []
+    def confirm(dialog):
+        if dialog.windowTitle().startswith("Final confirmation"):
+            body = dialog.findChild(gui.QPlainTextEdit).toPlainText()
+            assert str(source) in body and device.path in body
+            assert "NO RECOVERY BACKUP WILL BE CREATED" in body
+            confirmations.append(body)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(gui.TextDialog, "exec", confirm)
+    monkeypatch.setattr(gui, "write_card_direct", lambda d, source, progress, cancel, **kw: sim.write_direct(source, progress, cancel, **kw))
+    errors = []
+    monkeypatch.setattr(window, "fail", errors.append)
+    window.actions["write"].trigger()
+    settle(qtbot, window)
+    assert not errors and len(confirmations) == 1
+    assert target.read_bytes() == source.read_bytes() + before[512:]
+    assert source.read_bytes() == b"\x47" * 512
+    assert "readback verified" in window.state_label.text()
+    assert not list(tmp_path.glob("*.json"))
     window.close()

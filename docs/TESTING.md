@@ -6,7 +6,7 @@ enumeration was exercised. The actual PySide6 Widgets interface was launched on
 the X desktop, browsed and visually inspected. The helper was staged under `/tmp`,
 with no system installation or configuration change.
 
-Recorded results (2026-10-31): **94 offline tests passed, 2 reference tests
+Recorded results (2026-10-31): **104 offline tests passed, 2 reference tests
 skipped by default; both opt-in reference integration tests passed**.
 
 ## Reproduce
@@ -54,11 +54,11 @@ observations from this desktop, not performance guarantees for other systems.
 | Disks | Every explicit export size, round trips, smaller imports/tail choices, duplicate mapping rejection, prevalidated batch failures and rollback |
 | BASIC files | Exact binary data and metadata, empty/full-sector/full-granule/max lengths, allocation across track 17, sidecars, rename/delete, deleted entries, orphan/cyclic allocation and disk full |
 | OS-9 | Root/descriptors/segments/names, extraction, complete volume add/export/replace, invalid extents and explicitly acknowledged diagnostic export |
-| Backups/write | Complete simulated snapshots, durable reopen/hash, restore/readback, larger-target tail, stale/foreign/modified provenance, second target and racing output protection |
+| Backups/write | Complete simulated snapshots, durable reopen/hash, restore/readback, explicit no-backup writes/readback/cancellation, larger-target tail, stale/foreign/modified provenance, second target and racing output protection |
 | I/O failures | Short reads/writes, EOF/EIO, zero writes, ENOSPC/space checks, cancellation before/during writing, replacement, source instability, readback mismatch and missing privilege/authentication |
 | Device protection | USB with false removable flag, empty/zero-capacity slots, media removal after selection, internal/system/root/home/swap paths, parent/partition/mapper relationships, backing conflicts, mounts, disk sequence and other raw opens |
-| Helper protocol | Real SCM_RIGHTS transport, descriptor restrictions, exclusive flags, snapshot/write dispatch and readback using a regular-file adapter for target open/stat/ioctl |
-| GUI | Open/browse/import/export/save, file insert/rename/extract/delete, partition create/rename/delete, OS-9 browse/extract, simulated card workflow, cancellation/errors, event-loop heartbeat and progress above 4 GiB |
+| Helper protocol | Real SCM_RIGHTS transport, descriptor restrictions, exclusive flags, snapshot/backup-first/direct dispatch and readback using a regular-file adapter; direct acknowledgement and old-helper rejection |
+| GUI | Open/browse/import/export/save, file insert/rename/extract/delete, partition create/rename/delete, OS-9 browse/extract, simulated backup-first and standalone direct write, one final warning, no direct-mode Save dialog, unchanged source, cancellation/errors, event-loop heartbeat and progress above 4 GiB |
 | Packaging | No media/private data, fixed helper module inventory, syntax/licenses/auth policy, offline clean user installation and staged helper installation |
 
 The shared engine and helper protocol are exercised, but kernel/reader behavior
@@ -101,6 +101,9 @@ versions, reader model/serial, card brand/capacity, USB port and results.
 - [ ] Safely reconnect/use the card in the actual Drive Pak/CoCoNet hardware.
   Check disk selection, directories and loading the test program. This is the
   firmware/reader compatibility test absent from automated results.
+- [ ] Optional direct-mode test, retaining the initial verified backup elsewhere:
+  choose the saved source image, clear the backup checkbox, check the final
+  no-backup warning, write the same spare and wait for independent readback.
 - [ ] Return the spare to the computer. Open/verify the **initial** backup, take
   a **new** snapshot of its present contents, and explicitly restore the initial
   image through the normal write/readback workflow.

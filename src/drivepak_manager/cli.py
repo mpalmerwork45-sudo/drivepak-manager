@@ -12,7 +12,7 @@ from .errors import DrivePakError, SafetyError, FormatError
 from .filesystems.decb import DECB
 from .filesystems.os9 import OS9
 from .image import Image, RAW_DISK_SIZES, create_blank
-from .linux import backup_card, write_card
+from .linux import backup_card, write_card, write_card_direct
 from .streams import copy_verified
 
 
@@ -105,10 +105,12 @@ def parser():
     x = sub.add_parser("backup-card")
     x.add_argument("device")
     x.add_argument("output")
-    x = sub.add_parser("write-card", help="authenticated physical write with current-target backup and readback verification")
+    x = sub.add_parser("write-card", help="authenticated physical write with mandatory readback verification")
     x.add_argument("device")
     x.add_argument("image")
-    x.add_argument("--backup", required=True, help="complete verified snapshot of this target's current bytes")
+    policy = x.add_mutually_exclusive_group(required=True)
+    policy.add_argument("--backup", help="complete verified snapshot of this target's current bytes")
+    policy.add_argument("--no-backup", action="store_true", help="explicitly accept overwriting without creating a recovery backup")
     x.add_argument("--confirm-device", help="automation only: must exactly equal selected device path; otherwise interactive final review")
     x = sub.add_parser("simulate-backup", help="regular-file simulated device only")
     x.add_argument("device_file")
@@ -116,7 +118,9 @@ def parser():
     x = sub.add_parser("simulate-write", help="regular-file simulated device only")
     x.add_argument("device_file")
     x.add_argument("image")
-    x.add_argument("--backup", required=True)
+    policy = x.add_mutually_exclusive_group(required=True)
+    policy.add_argument("--backup")
+    policy.add_argument("--no-backup", action="store_true")
     return p
 
 
@@ -143,14 +147,16 @@ def execute(a):
         else:
             if not sys.stdin.isatty():
                 raise SafetyError("Noninteractive physical writes require --confirm-device with the exact destination path.")
-            print(f"Destination: {d.path} · {d.model} · {d.capacity:,} bytes · {d.serial or d.diskseq}\nImage: {a.image}\nVerified current-target backup: {a.backup}\nBytes beyond a shorter image are preserved. Interrupted writes can leave incomplete contents.", file=sys.stderr)
+            policy = "DIRECT WRITE: no recovery backup will be created." if a.no_backup else f"Verified current-target backup: {a.backup}"
+            print(f"READ image: {a.image}\nWRITE card: {d.path} · {d.model} · {d.capacity:,} bytes · {d.serial or d.diskseq}\n{policy}\nBytes beyond a shorter image are preserved. Interrupted writes can leave incomplete contents.", file=sys.stderr)
             if input(f"Type {d.path} to write and verify: ") != d.path:
                 raise SafetyError("Write was not confirmed.")
-        return write_card(d, a.image, a.backup, progress)
+        return write_card_direct(d, a.image, progress, acknowledge_no_backup=True) if a.no_backup else write_card(d, a.image, a.backup, progress)
     if cmd == "simulate-backup":
         return SimulatedDevice(Path(a.device_file)).backup(a.output, progress)
     if cmd == "simulate-write":
-        return SimulatedDevice(Path(a.device_file)).write(a.image, a.backup, progress)
+        simulated = SimulatedDevice(Path(a.device_file))
+        return simulated.write_direct(a.image, progress, acknowledge_no_backup=True) if a.no_backup else simulated.write(a.image, a.backup, progress)
     if cmd == "new":
         create_blank(a.output, a.capacity_mib * 1024**2, a.disks, a.name, progress)
         return {"created": a.output}

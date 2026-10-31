@@ -1,6 +1,7 @@
 """Native desktop workflows. All long operations run outside the GUI thread."""
 import json
 import os
+import stat
 from pathlib import Path
 import re
 import sys
@@ -24,8 +25,8 @@ from .filesystems.decb import DECB
 from .filesystems.os9 import OS9
 from .format import BLOCK, DEFAULTS, SLOT_BYTES
 from .image import RAW_DISK_SIZES, Session, create_blank, read_disk_file
-from .linux import backup_card, write_card
-from .streams import checkpoint, report, write_json
+from .linux import backup_card, write_card, write_card_direct
+from .streams import checkpoint, report, write_json, distinct
 
 
 def human(n):
@@ -265,6 +266,53 @@ class MappingDialog(QDialog):
         return result
 
 
+class WriteOptionsDialog(QDialog):
+    def __init__(self, source="", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Write image file to SD card")
+        self.resize(760, 280)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Read an image file → write the selected SD card.\nThe source image is opened read-only."))
+        row = QHBoxLayout()
+        self.source = QLineEdit(str(source))
+        self.source.setPlaceholderText("Choose the .img file to read, for example NEWIMAGE.img")
+        browse = QPushButton("Choose image…")
+        browse.clicked.connect(self.choose_image)
+        row.addWidget(self.source, 1)
+        row.addWidget(browse)
+        layout.addWidget(QLabel("Image file to read from:"))
+        layout.addLayout(row)
+        self.backup_first = QCheckBox("Create and verify a backup of the card first (recommended)")
+        self.backup_first.setChecked(True)
+        layout.addWidget(self.backup_first)
+        warning = QLabel("Direct write: no recovery backup will be created. The card's existing contents will be overwritten. An interrupted or failed write may leave incomplete data. Readback verification still runs.")
+        warning.setWordWrap(True)
+        warning.setVisible(False)
+        self.backup_first.toggled.connect(lambda checked: warning.setVisible(not checked))
+        layout.addWidget(warning)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.addButton("Choose SD card…", QDialogButtonBox.ButtonRole.AcceptRole).clicked.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def choose_image(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose SOURCE image to read", self.source.text(), "Raw card images (*.img *.bin);;All files (*)")
+        if path:
+            self.source.setText(path)
+
+    def accept(self):
+        try:
+            p = Path(self.source.text()).resolve()
+            s = p.stat()
+            if not stat.S_ISREG(s.st_mode) or not s.st_size or s.st_size % 512:
+                raise FormatError("Choose an existing, nonempty raw image file with a length divisible by 512 bytes.")
+            self.source.setText(str(p))
+        except (OSError, DrivePakError) as e:
+            QMessageBox.warning(self, "Choose source image", str(e))
+            return
+        super().accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -487,7 +535,7 @@ class MainWindow(QMainWindow):
         disk = bool(part and part.kind == 2 and self.current[1] is not None)
         os9 = bool(part and part.kind in (3, 4))
         selected = bool(self.files.selectionModel().selectedRows())
-        always = {"open", "new", "backup", "verify", "preferences", "guide"}
+        always = {"open", "new", "backup", "verify", "write", "preferences", "guide"}
         edits = {"create_part", "rename_part", "delete_part", "default", "import_disk"}
         for key, action in self.actions.items():
             enabled = key in always or loaded
@@ -559,7 +607,7 @@ class MainWindow(QMainWindow):
         else:
             self.layout_notice.hide()
             self.identity_label.setText("Open an image, create a blank image, or select a card to back it up and begin editing.")
-            self.state_label.setText("Card workflow: Select card → verified complete backup → separate working image → edit → review → write → readback verify")
+            self.state_label.setText(f"{self.written_status}\n{self.backup_status}" if self.written_status.startswith("Card write readback verified") else "Card workflow: Select card → verified complete backup → separate working image → edit → review → write → readback verify")
             self.directory_status.setText("Image files and card backups are kept unchanged. All edits use a separate working image.")
         self.tree.blockSignals(False)
         if chosen:
@@ -978,10 +1026,12 @@ class MainWindow(QMainWindow):
         dialog = DeviceDialog(title, self)
         return dialog.selected() if dialog.exec() == QDialog.DialogCode.Accepted else None
 
-    def backup_destination(self, device):
+    def backup_destination(self, device, source=None):
         base = self.settings.value("backup_dir", str(Path.home() / "DrivePak-backups"))
-        default = Path(base) / f"{safe_name(device.model)}-{datetime.now():%Y%m%d-%H%M%S}.img"
-        path, _ = QFileDialog.getSaveFileName(self, "Complete backup on storage independent of the card", str(default), "Complete raw backup (*.img)")
+        prefix = f"BACKUP-before-{safe_name(Path(source).stem)}-" if source else "CARD-BACKUP-"
+        default = Path(base) / f"{prefix}{safe_name(device.model)}-{datetime.now():%Y%m%d-%H%M%S}.img"
+        title = f"Save BACKUP of {device.path}'s current contents before writing {Path(source).name}" if source else f"Save complete BACKUP of {device.path} on independent storage"
+        path, _ = QFileDialog.getSaveFileName(self, title, str(default), "Complete card backup (*.img)", options=QFileDialog.Option.DontConfirmOverwrite)
         if path:
             self.settings.setValue("backup_dir", str(Path(path).parent))
         return path
@@ -1019,31 +1069,65 @@ class MainWindow(QMainWindow):
         TextDialog("Review working image", self.review_text(), self).exec()
 
     def write_action(self):
+        if self.worker:
+            return
+        default = ""
+        if self.session:
+            default = self.session.saved_as or (self.session.working if self.session.changes else self.session.original)
+        options = WriteOptionsDialog(default, self)
+        if options.exec() != QDialog.DialogCode.Accepted:
+            return
+        source = Path(options.source.text()).resolve()
+        try:
+            selected_stat = source.stat()
+            selected_identity = (selected_stat.st_dev, selected_stat.st_ino, selected_stat.st_size, selected_stat.st_mtime_ns, selected_stat.st_ctime_ns)
+            size = selected_stat.st_size
+            if not source.is_file() or not size or size % 512:
+                raise FormatError("Select an existing, nonempty raw image with a length divisible by 512 bytes.")
+        except (OSError, DrivePakError) as e:
+            self.fail(str(e))
+            return
         device = self.choose_device("Select exact destination for image write")
         if not device:
             return
-        if self.session.image.size > device.capacity:
+        if size > device.capacity:
             self.fail("The selected card is smaller than this image. The application never truncates an image to fit.")
             return
-        destination = self.backup_destination(device)
-        if not destination:
-            return
-        # Every write gets a fresh snapshot of the selected target, including a
-        # second card. One final write confirmation follows the read-only backup.
+        destination = None
+        if options.backup_first.isChecked():
+            destination = self.backup_destination(device, source=source)
+            if not destination:
+                return
+            try:
+                distinct(source, destination)
+            except DrivePakError:
+                self.fail("The backup must have a different filename from the SOURCE image. Choose a new backup name; the source image will be read to write the card.")
+                return
         def ready(_):
-            source = self.session.working
-            extra = device.capacity - self.session.image.size
-            text = (f"DESTINATION: {device.path}\nModel: {device.model}\nSerial / stable ID: {device.serial or device.wwn or device.diskseq}\nActual capacity: {device.capacity:,} bytes\n\nVerified backup of its current contents:\n{destination}\n\nIMAGE: {source}\nWrite range: {self.session.image.size:,} bytes from offset zero.\nBytes after that range: {extra:,}, preserved. Partitions do not expand.\n\nWriting is not atomic. Cancellation/unplugging can leave incomplete contents; retain the backup for recovery.\n\n" + self.review_text())
-            if TextDialog("Final confirmation — write image to card", text, self, f"Write to {device.path} and verify").exec() != QDialog.DialogCode.Accepted:
+            backup_text = f"Verified current-card backup:\n{destination}" if destination else "DIRECT WRITE — NO RECOVERY BACKUP WILL BE CREATED.\nExisting card contents will be overwritten. Recovery will require an existing backup or another known-good image."
+            text = (f"READ SOURCE IMAGE: {source}\n\nWRITE DESTINATION CARD: {device.path}\nModel: {device.model}\nSerial / stable ID: {device.serial or device.wwn or device.diskseq}\nActual capacity: {device.capacity:,} bytes\n\n{backup_text}\n\nWrite range: {size:,} bytes from offset zero.\nBytes after that range: {device.capacity-size:,}, preserved. Partitions do not expand.\n\nWriting is not atomic. Interruption can leave incomplete contents. Independent readback verification is required.")
+            if TextDialog("Final confirmation — image → SD card", text, self, f"Write {source.name} to {device.path} and verify").exec() != QDialog.DialogCode.Accepted:
                 return
 
+            def write(progress, cancel):
+                current = source.stat()
+                if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns) != selected_identity:
+                    raise DrivePakError("The source image changed after selection. Select it again and review the new write range. No card write started.")
+                if destination:
+                    return write_card(device, source, destination, progress, cancel)
+                return write_card_direct(device, source, progress, cancel, acknowledge_no_backup=True)
+
             def written(result):
-                self.written_status = f"Card write readback verified: {device.path} at {result['verified_utc']}"
-                self.backup_status = f"Recovery backup retained: {destination}"
+                self.written_status = f"Card write readback verified: {source.name} → {device.path} at {result['verified_utc']}"
+                self.backup_status = f"Recovery backup retained: {destination}" if destination else "Direct write: no recovery backup created"
                 self.refresh()
-                TextDialog("Card write verified", json.dumps(result, indent=2) + f"\n\nRecovery backup retained at {destination}", self).exec()
-            self.run_task("Writing card and independently reading it back", lambda p, c: write_card(device, source, destination, p, c), written)
-        self.run_task("Creating and verifying a fresh complete destination backup", lambda p, c: backup_card(device, destination, self.work_dir, p, c), ready)
+                TextDialog("Card write verified", json.dumps(result, indent=2) + f"\n\n{self.backup_status}", self).exec()
+            self.run_task("Writing card and independently reading it back", write, written)
+        if destination:
+            work = self.work_dir if self.session else None
+            self.run_task("Creating and verifying the selected card's safety backup", lambda p, c: backup_card(device, destination, work, p, c), ready)
+        else:
+            ready(None)
 
     def choose_work_dir(self):
         directory = QFileDialog.getExistingDirectory(self, "Working image storage (independent of target cards)", str(self.work_dir))
@@ -1057,7 +1141,7 @@ class MainWindow(QMainWindow):
             self.run_task("Saving diagnostics", lambda p, c: write_json(path, data))
 
     def guide(self):
-        TextDialog("DrivePak Manager quick start", "Open image: selects a raw card image, verifies a separate working copy, then enables editing. Expand a partition and select a numbered disk.\n\nBack up card / Open card: select an external reader, deliberately unmount its volumes if needed, then choose independent backup storage. Every physical byte is copied and independently verified before a working image opens.\n\nImport disk(s): choose raw sector images, review each destination bank/slot and choose how a smaller disk fills the unused logical tail. Export disk(s): select one or several disk rows and choose an explicit size. The original floppy length is not stored.\n\nFiles menu: extract exact bytes plus metadata sidecars; insert, rename and delete files in validated standard Disk BASIC disks. OS-9 supports browsing/extraction and whole-volume import/export. Double-click an OS-9 directory; use Up to return.\n\nPartitions menu: add empty BASIC banks or complete OS-9 volumes; rename/delete entries and assign defaults. Deleting an entry leaves data intact and lets you reassign affected defaults.\n\nSave image as: saves and verifies a new image. Discard changes recreates the working copy from its unchanged original. Working files remain available after closing the app; their paths are shown above.\n\nWrite image to card: explicitly select the target each time. A fresh verified complete backup is taken first. Review one final confirmation, authenticate the helper, and wait for independent device readback verification. Bytes beyond a shorter image are preserved.\n\nRecovery after an interrupted write: keep the earlier backup. Open that backup as an image; choose Write image to card. Take a new backup of the selected card's present state, then explicitly confirm restoring the earlier image. Never delete the only recoverable snapshot.\n\nUnsupported layouts still allow complete backup, saved copies and diagnostics. Normal development uses simulated devices; spare-card hardware validation is a separate manual step.", self).exec()
+        TextDialog("DrivePak Manager quick start", "Open image: selects a raw card image, verifies a separate working copy, then enables editing. Expand a partition and select a numbered disk.\n\nBack up card / Open card: select an external reader, deliberately unmount its volumes if needed, then choose independent backup storage. Every physical byte is copied and independently verified before a working image opens.\n\nImport disk(s): choose raw sector images, review each destination bank/slot and choose how a smaller disk fills the unused logical tail. Export disk(s): select one or several disk rows and choose an explicit size. The original floppy length is not stored.\n\nFiles menu: extract exact bytes plus metadata sidecars; insert, rename and delete files in validated standard Disk BASIC disks. OS-9 supports browsing/extraction and whole-volume import/export. Double-click an OS-9 directory; use Up to return.\n\nPartitions menu: add empty BASIC banks or complete OS-9 volumes; rename/delete entries and assign defaults. Deleting an entry leaves data intact and lets you reassign affected defaults.\n\nSave image as: saves and verifies a new image. Discard changes recreates the working copy from its unchanged original. Working files remain available after closing the app; their paths are shown above.\n\nWrite image to card: choose the source image file to READ, then select the destination SD card to WRITE. A fresh verified backup is enabled by default. Clear the backup checkbox for an explicit direct write without creating a backup; no Save dialog appears in direct mode. Review one final confirmation, authenticate the helper, and wait for independent device readback verification. Bytes beyond a shorter image are preserved.\n\nRecovery after an interrupted write: keep the earlier backup. Open that backup as an image; choose Write image to card. Take a new backup of the selected card's present state, then explicitly confirm restoring the earlier image. Never delete the only recoverable snapshot.\n\nUnsupported layouts still allow complete backup, saved copies and diagnostics. Normal development uses simulated devices; spare-card hardware validation is a separate manual step.", self).exec()
 
     def closeEvent(self, event):
         if self.worker:

@@ -9,7 +9,7 @@ fi
 python3 -c 'import sys; assert sys.version_info >= (3,11), "Python 3.11 or newer is required"'
 python3 -m venv "$INSTALL_PREFIX/venv"
 "$INSTALL_PREFIX/venv/bin/python" -m pip install -r "$PACKAGE_DIR/requirements-runtime.lock"
-"$INSTALL_PREFIX/venv/bin/python" -m pip install --no-deps --force-reinstall "$PACKAGE_DIR/drivepak_manager-1.0.2-py3-none-any.whl"
+"$INSTALL_PREFIX/venv/bin/python" -m pip install --no-deps --force-reinstall "$PACKAGE_DIR/drivepak_manager-1.0.3-py3-none-any.whl"
 "$INSTALL_PREFIX/venv/bin/python" - "$PACKAGE_DIR" "$INSTALL_PREFIX" <<'PY'
 from pathlib import Path
 import os, shlex, shutil, sys

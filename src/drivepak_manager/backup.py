@@ -91,6 +91,27 @@ def restore_stream(target, capacity, identity, source, backup, manifest, progres
         raise SafetyError("Target no longer matches the backup. Create and verify a fresh complete backup before writing.")
     if fingerprint(backup) != bf or fingerprint(source) != sf:
         raise SafetyError("Source or recovery backup changed before writing.")
+    return _write_verified(target, capacity, source, sf, source_digest, progress, cancel, guard, backup, bf)
+
+
+def direct_write_stream(target, capacity, source, progress=None, cancel=None, guard=None, *, acknowledge_no_backup=False):
+    """Explicit opt-in: no snapshot, same protected write and independent readback."""
+    if acknowledge_no_backup is not True:
+        raise SafetyError("Direct writing requires explicit acknowledgement that no recovery backup will be created.")
+    require_capacity(capacity)
+    sf = fingerprint(source)
+    tf = os.fstat(target.fileno())
+    if sf[:2] == (tf.st_dev, tf.st_ino) or not 0 < sf[2] <= capacity or sf[2] % 512:
+        raise SafetyError("Source must be a separate nonempty 512-byte-aligned image fitting the card. No truncation is allowed.")
+    if guard:
+        guard()
+    digest = hash_stream(source, sf[2], progress, cancel, "Checking source image")
+    if fingerprint(source) != sf:
+        raise SafetyError("Source image changed before writing.")
+    return _write_verified(target, capacity, source, sf, digest, progress, cancel, guard)
+
+
+def _write_verified(target, capacity, source, sf, source_digest, progress, cancel, guard, backup=None, bf=None):
     checkpoint(cancel)
     if guard:
         guard()
@@ -104,17 +125,20 @@ def restore_stream(target, capacity, identity, source, backup, manifest, progres
         os.fsync(target.fileno())
         if hasattr(target, "invalidate"):
             target.invalidate()
-        if copied != source_digest or fingerprint(source) != sf or fingerprint(backup) != bf:
+        if copied != source_digest or fingerprint(source) != sf or (backup is not None and fingerprint(backup) != bf):
             raise SafetyError("Source image or recovery backup changed during the physical write.")
         if guard:
             guard()
         readback = hash_stream(target, sf[2], progress, cancel, "Reading back written card range", guard)
         if readback != source_digest:
             raise DrivePakError("Card readback checksum mismatch.")
+        if fingerprint(source) != sf or (backup is not None and fingerprint(backup) != bf):
+            raise SafetyError("Source image or recovery backup changed during verification.")
         if guard:
             guard()
         return {"status": "verified", "bytes_written": sf[2], "target_capacity": capacity,
                 "sha256": source_digest, "verified_utc": utcnow(),
+                "backup_policy": "verified-current-target" if backup is not None else "none-explicit-direct-write",
                 "tail_policy": "Bytes beyond the image were preserved; partitions were not expanded."}
     except BaseException as e:
         if started:
@@ -123,7 +147,9 @@ def restore_stream(target, capacity, identity, source, backup, manifest, progres
                 os.fsync(target.fileno())
             except OSError:
                 pass
-            raise DrivePakError(f"PHYSICAL WRITE INCOMPLETE OR UNVERIFIED: {e} The card may contain partial data. Keep the recovery backup. Re-select the card, take a fresh snapshot of its current state, then explicitly restore the earlier verified image; no automatic retry occurred.") from e
+            recovery = ("Keep the recovery backup. Re-select the card, take a fresh snapshot of its current state, then explicitly restore the earlier verified image."
+                        if backup is not None else "No recovery backup was created for this direct write. Recovery requires an existing backup or another known-good image.")
+            raise DrivePakError(f"PHYSICAL WRITE INCOMPLETE OR UNVERIFIED: {e} The card may contain partial data. {recovery} No automatic retry occurred.") from e
         raise
 
 
@@ -165,3 +191,9 @@ class SimulatedDevice:
         manifest = verify_backup(recovery_backup, progress, cancel)
         with self.path.open("r+b", buffering=0) as target, open(source, "rb", buffering=0) as src, open(recovery_backup, "rb", buffering=0) as back:
             return restore_stream(target, self.capacity, self.identity, src, back, manifest, progress, cancel, self.guard)
+
+    def write_direct(self, source, progress=None, cancel=None, *, acknowledge_no_backup=False):
+        distinct(self.path, source)
+        with self.path.open("r+b", buffering=0) as target, open(source, "rb", buffering=0) as src:
+            return direct_write_stream(target, self.capacity, src, progress, cancel, self.guard,
+                                       acknowledge_no_backup=acknowledge_no_backup)

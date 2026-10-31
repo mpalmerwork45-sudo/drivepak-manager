@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 args = argparse.ArgumentParser(description=__doc__)
 args.add_argument("--offscreen", action="store_true")
 args.add_argument("--keep-open", action="store_true")
+args.add_argument("--write-options", action="store_true", help="inspect the source/backup dialog only; never selects or opens a card")
 args.add_argument("--installed-launcher", help="also check startup of this installed desktop entrypoint")
 args.add_argument("--device-picker", action="store_true", help="inspect read-only device enumeration; never opens, backs up or unmounts a card")
 options = args.parse_args()
@@ -34,7 +35,7 @@ if options.installed_launcher:
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
-from drivepak_manager.gui import MainWindow, DeviceDialog
+from drivepak_manager.gui import MainWindow, DeviceDialog, WriteOptionsDialog
 from drivepak_manager.image import Image, create_blank
 from drivepak_manager.filesystems.decb import DECB
 
@@ -96,6 +97,24 @@ def inspect():
         window.grab().save(str(work / "desktop.png"))
         print(f"Desktop inspected: {app.platformName()}, screenshot {work / 'desktop.png'}", flush=True)
         state[0] = 2
+        if options.write_options:
+            window.write_inspection = WriteOptionsDialog(image, window)
+            window.write_inspection.show()
+            def inspect_options():
+                dialog = window.write_inspection
+                assert dialog.backup_first.isChecked()
+                dialog.grab().save(str(work / "write-backup-first.png"))
+                dialog.backup_first.setChecked(False)
+                def capture_direct():
+                    dialog.grab().save(str(work / "write-direct.png"))
+                    print("Source/backup-first/direct dialog inspected; no card selected or opened.", flush=True)
+                    if not options.keep_open:
+                        dialog.reject()
+                        window.close()
+                        app.quit()
+                QTimer.singleShot(150, capture_direct)
+            QTimer.singleShot(150, inspect_options)
+            return
         if not options.keep_open:
             window.close()
             app.quit()

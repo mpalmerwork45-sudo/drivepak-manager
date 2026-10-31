@@ -6,6 +6,7 @@
 - [x] Immutable originals, transactional working images and partition management
 - [x] Disk/batch/volume import and export with explicit geometry and mapping
 - [x] Streaming, durable, verified complete backups and restore
+- [x] Optional explicit direct image-to-card write with final warning and readback
 - [x] Real Linux enumeration, protection checks and narrow privileged helper
 - [x] Connected desktop actions, progress, cancellation and review
 - [x] Offline corruption/failure/GUI tests and disposable full-image integration

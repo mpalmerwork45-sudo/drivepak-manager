@@ -9,8 +9,12 @@
 * Originals and verified backups are immutable to this application. Edit separate
   working images. Preserve all unrelated bytes, physical padding, unknown fields,
   table indices and virtual disk numbers. Fail closed on ambiguous edits.
-* Backups are full capacity, streamed, durable and independently verified. A card
-  write requires a verified snapshot matching its current bytes and identity.
+* Backups are full capacity, streamed, durable and independently verified. The
+  default card-write mode requires a current-target verified snapshot. The user
+  has explicitly requested an optional direct-write mode: it requires a clear
+  no-backup warning, explicit final confirmation and no-backup acknowledgement
+  across the privileged boundary. Device protection, source stability, bounds,
+  flushing and independent readback remain mandatory in both modes.
 * Use checked offsets and bounded buffers. A failed/cancelled mutation rolls back
   the working image. Partial card writes are failures requiring manual recovery.
 * Reference downloads are research only, not redistributable application assets.

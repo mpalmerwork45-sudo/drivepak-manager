@@ -277,3 +277,55 @@ def test_short_device_write_never_success(device, tmp_path):
     with device.path.open("r+b", buffering=0) as target, source.open("rb", buffering=0) as src, backup.open("rb", buffering=0) as back:
         with pytest.raises(DrivePakError, match="PHYSICAL WRITE INCOMPLETE.*Short write"):
             restore_stream(BadWriter(target), device.capacity, device.identity, src, back, manifest)
+
+
+def test_direct_write_requires_acknowledgement_and_verifies_range(device, tmp_path):
+    source = tmp_path / "NEWIMAGE.img"
+    source.write_bytes(b"\x65" * 1024)
+    before = device.path.read_bytes()
+    with pytest.raises(SafetyError, match="acknowledgement"):
+        device.write_direct(source)
+    assert device.path.read_bytes() == before
+    phases = []
+    result = device.write_direct(source, lambda d, n, phase: phases.append(phase), acknowledge_no_backup=True)
+    assert result["status"] == "verified" and result["bytes_written"] == 1024
+    assert result["backup_policy"] == "none-explicit-direct-write"
+    assert device.path.read_bytes() == source.read_bytes() + before[1024:]
+    assert source.read_bytes() == b"\x65" * 1024
+    assert "Reading back written card range" in phases
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_direct_write_cancel_and_readback_failure_are_never_success(device, tmp_path, monkeypatch):
+    from drivepak_manager import backup
+    source = tmp_path / "NEWIMAGE.img"
+    source.write_bytes(b"\x71" * 512)
+    event = threading.Event()
+    def cancel_after_copy(d, n, phase):
+        if phase == "Copying":
+            event.set()
+    with pytest.raises(DrivePakError, match="PHYSICAL WRITE INCOMPLETE.*No recovery backup was created"):
+        device.write_direct(source, cancel_after_copy, event, acknowledge_no_backup=True)
+    original = backup.hash_stream
+    def corrupt(f, count, progress=None, cancel=None, phase="Verifying", guard=None):
+        digest = original(f, count, progress, cancel, phase, guard)
+        return "bad digest" if phase == "Reading back written card range" else digest
+    monkeypatch.setattr(backup, "hash_stream", corrupt)
+    with pytest.raises(DrivePakError, match="PHYSICAL WRITE INCOMPLETE.*readback checksum mismatch"):
+        device.write_direct(source, acknowledge_no_backup=True)
+
+
+def test_direct_write_rejects_oversize_same_file_and_prewrite_cancel(device, tmp_path):
+    source = tmp_path / "source.img"
+    before = device.path.read_bytes()
+    source.write_bytes(bytes(device.capacity + 512))
+    with pytest.raises(SafetyError, match="fitting"):
+        device.write_direct(source, acknowledge_no_backup=True)
+    with pytest.raises(SafetyError, match="different paths|hard links"):
+        device.write_direct(device.path, acknowledge_no_backup=True)
+    source.write_bytes(bytes(512))
+    event = threading.Event()
+    event.set()
+    with pytest.raises(Cancelled):
+        device.write_direct(source, cancel=event, acknowledge_no_backup=True)
+    assert device.path.read_bytes() == before

@@ -15,7 +15,7 @@ import stat
 import struct
 import sys
 
-from .backup import snapshot_stream, restore_stream
+from .backup import snapshot_stream, restore_stream, direct_write_stream
 from .devices import validate
 from .errors import SafetyError
 
@@ -78,25 +78,30 @@ def serve(sock, uid):
         if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(msg) > 32768:
             raise SafetyError("Oversized helper request.")
         request = json.loads(msg)
-        if set(request) - {"operation", "expected", "manifest"}:
+        if set(request) - {"operation", "expected", "manifest", "acknowledge_no_backup"}:
             raise SafetyError("Unknown helper request field.")
         op = request["operation"]
-        if op not in ("backup", "write") or len(descriptors) != 2:
+        if op not in ("backup", "write", "write-direct") or len(descriptors) != (1 if op == "write-direct" else 2):
             raise SafetyError("Unsupported helper operation or descriptor count.")
-        one, two = descriptors
+        direct = op == "write-direct"
+        if direct and request.get("acknowledge_no_backup") is not True:
+            raise SafetyError("Direct writing requires explicit acknowledgement that no backup is being created.")
+        one = descriptors[0]
         s1 = check_fd(one, uid, writable=op == "backup")
         # Backup readback is the same file, so do not take a second flock which
         # would conflict with its independent exclusive output descriptor.
-        s2 = os.fstat(two)
-        if not stat.S_ISREG(s2.st_mode) or fcntl.fcntl(two, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
-            raise SafetyError("Readback/backup descriptor must be a read-only regular file.")
-        if op == "backup":
-            if (s1.st_dev, s1.st_ino) != (s2.st_dev, s2.st_ino) or s1.st_size:
-                raise SafetyError("Backup requires an empty new output and an independently reopened readback descriptor.")
-        else:
-            check_fd(two, uid)
-            if (s1.st_dev, s1.st_ino) == (s2.st_dev, s2.st_ino):
-                raise SafetyError("Source image and recovery backup must be separate files.")
+        if not direct:
+            two = descriptors[1]
+            s2 = os.fstat(two)
+            if not stat.S_ISREG(s2.st_mode) or fcntl.fcntl(two, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
+                raise SafetyError("Readback/backup descriptor must be a read-only regular file.")
+            if op == "backup":
+                if (s1.st_dev, s1.st_ino) != (s2.st_dev, s2.st_ino) or s1.st_size:
+                    raise SafetyError("Backup requires an empty new output and an independently reopened readback descriptor.")
+            else:
+                check_fd(two, uid)
+                if (s1.st_dev, s1.st_ino) == (s2.st_dev, s2.st_ino):
+                    raise SafetyError("Source image and recovery backup must be separate files.")
         expected = request["expected"]
         device = validate(expected, storage_paths=[pwd.getpwuid(uid).pw_dir], storage_fds=descriptors)
         if not device.path.startswith("/dev/") or str(Path(device.path).resolve()) != device.path:
@@ -127,6 +132,12 @@ def serve(sock, uid):
         with os.fdopen(os.dup(fd), "rb" if op == "backup" else "r+b", buffering=0) as target:
             # Flush/invalidate block cache before the independent device pass.
             target.invalidate = lambda: fcntl.ioctl(fd, BLKFLSBUF)
+            if direct:
+                with os.fdopen(os.dup(one), "rb", buffering=0) as source:
+                    result = direct_write_stream(target, device.capacity, source, progress, cancel, guard,
+                                                 acknowledge_no_backup=True)
+                send(sock, {"event": "result", "result": result})
+                return
             with os.fdopen(os.dup(one), "r+b" if op == "backup" else "rb", buffering=0) as first, os.fdopen(os.dup(two), "rb", buffering=0) as second:
                 if op == "backup":
                     free = os.fstatvfs(first.fileno()).f_bavail * os.fstatvfs(first.fileno()).f_frsize

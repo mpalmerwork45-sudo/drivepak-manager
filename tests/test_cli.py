@@ -27,3 +27,14 @@ def test_cli_invalid_os9_export_requires_diagnostic_acknowledgement(card, os9_vo
     assert main(args) == 2 and not output.exists()
     assert main(args + ["--diagnostic"]) == 0
     assert output.stat().st_size == 32 * 256
+
+
+def test_cli_explicit_direct_write_to_simulated_device(tmp_path, capsys):
+    import json
+    target, source = tmp_path / "simulated-device", tmp_path / "NEWIMAGE.img"
+    target.write_bytes(b"\x27" * 4096)
+    source.write_bytes(b"\x46" * 512)
+    assert main(["simulate-write", str(target), str(source), "--no-backup"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "verified" and result["backup_policy"] == "none-explicit-direct-write"
+    assert target.read_bytes() == source.read_bytes() + b"\x27" * 3584

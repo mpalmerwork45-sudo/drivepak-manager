@@ -18,7 +18,18 @@ The second snapshot prevents reuse of a stale backup and covers a separately
 selected destination card. It is retained even if the final write review is
 cancelled. The helper compares it with the entire current target again under
 exclusive access immediately before writing. CLI users may name an existing
-snapshot, but the same identity/capacity/full-content check is mandatory.
+snapshot, but the same identity/capacity/full-content check is mandatory in
+backup-first mode.
+
+An explicit alternative is available under **Write image to card**: select the
+source image, then clear **Create and verify a backup of the card first**.
+This direct mode has no backup Save dialog. A visible warning and the single
+final confirmation explain that existing card contents are overwritten without
+creating a recovery snapshot. The choice defaults back to backup-first each
+time. CLI users must explicitly pass `--no-backup` instead of `--backup`.
+Direct mode retains device protection, exclusive access, source stability,
+capacity/bounds checks, flushing and mandatory independent readback. It cannot
+recover previous card contents unless an earlier backup exists elsewhere.
 
 Each physical backup reads **every byte of the actual device capacity**, including
 unallocated space, table slack, boot code, padding and unknown regions. Recognised
@@ -92,7 +103,8 @@ reader media-change reporting still need spare-card hardware validation.
 
 The GUI and CLI remain unprivileged. A root-owned wrapper uses isolated system
 Python (`-I`) to run a fixed zipapp installed at a fixed path. The helper accepts
-only two operations: complete snapshot or checked image write. It does not run
+only complete snapshots and checked image writes (backup-first or explicitly
+acknowledged direct mode). It does not run
 shell strings, arbitrary commands, Python supplied by the caller, or install
 actions. It does not open arbitrary output paths as root.
 
@@ -100,8 +112,11 @@ The desktop creates a private mode-0700 Unix socket directory. The helper and
 caller check `SO_PEERCRED`; the authenticated `PKEXEC_UID` must match the caller.
 The caller passes already-open regular-file descriptors with SCM_RIGHTS. For a
 backup these are an empty new output owned by the caller and its independently
-reopened read-only descriptor. For writing they are read-only source and recovery
-backup descriptors. Access modes, file type, identity and backing storage are
+reopened read-only descriptor. Backup-first writes use read-only source and
+recovery backup descriptors; direct writes use a single read-only source and an
+explicit boolean no-backup acknowledgement. An old installed helper is rejected
+before elevation for direct writes using its installed capability metadata.
+Access modes, file type, identity and backing storage are
 validated. The only privileged writable object opened by the helper is the
 revalidated external block device. File locks and fingerprints protect the source
 and snapshot against cooperating writers and detect changes during processing.
@@ -115,20 +130,22 @@ with privileged real block-device access during development.
 ## Writing and verification
 
 A final review names the exact path, model, stable identifier, byte capacity,
-working image, current-target snapshot, range and recorded edits. Too-small cards
+source image, current-target snapshot or explicit no-backup warning, and range. Too-small cards
 are rejected before writing; there is no truncation option. A shorter distributable
 image is distinguished from a complete physical snapshot. On a larger target the
 unwritten tail is retained and no partition is expanded.
 
-Before the first write the helper hashes the recovery backup, source image and
+In backup-first mode, before the first write the helper hashes the recovery backup, source image and
 whole current target, validates manifest identity/capacity, compares the target
 with its recovery snapshot and checks that open sources remained stable. Stale,
-foreign or modified backups fail before any destructive I/O.
+foreign or modified backups fail before any destructive I/O. Direct mode skips
+the snapshot comparison only after explicit acknowledgement. It hashes the
+source before copying and checks that its identity/size/timestamps remain stable.
 
 After writing the helper flushes/fsyncs the device, invalidates the Linux block
 cache with BLKFLSBUF, then reads **the written range from the device** and compares
 that SHA-256 with the stable source. Source hashing by itself is never called
-write verification. The source, backup and device identity are checked again.
+write verification. The source, any supplied backup and device identity are checked again.
 Controller durability/flash retention beyond kernel flush/readback is a hardware
 property and remains outside the software's proof.
 
@@ -136,6 +153,8 @@ Cancellation is observed between bounded I/O chunks. Once writing begins,
 cancellation, unplugging, short write, flush error, source change or readback
 mismatch is reported as **PHYSICAL WRITE INCOMPLETE OR UNVERIFIED**. No automatic
 destructive retry occurs. A disconnected/crashed helper is also unverified.
+Direct-mode failures explicitly state that no recovery backup was created;
+recovery requires an existing backup or another known-good image.
 
 ## Manual recovery
 

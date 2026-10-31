@@ -1,6 +1,6 @@
 # DrivePak Manager
 
-**Version 1.0.2 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
+**Version 1.0.3 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
 
 A native Python/PySide6 desktop utility for Roger Taylor's **CoCoNet MicroSD
 Drive Pak** proprietary card layout. Supports working images, Disk BASIC disk
@@ -114,7 +114,7 @@ To enable card access directly from a source installation:
 
 ```bash
 ./tools/build_linux.sh
-sudo ./dist/drivepak-manager-1.0.2-linux/install-helper.sh
+sudo ./dist/drivepak-manager-1.0.3-linux/install-helper.sh
 ```
 
 The helper is installed once, then updated when a release requires it. Device
@@ -125,8 +125,8 @@ To produce the Linux distribution, desktop launcher and helper:
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.0.2-linux.tar.gz -C /tmp
-/tmp/drivepak-manager-1.0.2-linux/install-user.sh
+tar -xzf dist/drivepak-manager-1.0.3-linux.tar.gz -C /tmp
+/tmp/drivepak-manager-1.0.3-linux/install-user.sh
 ```
 
 The user installer creates a private virtualenv, an Applications menu entry and
@@ -139,7 +139,7 @@ offline wheelhouse installation and uninstall commands.
 this administrator installation yourself:
 
 ```bash
-sudo /tmp/drivepak-manager-1.0.2-linux/install-helper.sh
+sudo /tmp/drivepak-manager-1.0.3-linux/install-helper.sh
 ```
 
 This installs only the constrained helper and its authentication policy. It does
@@ -162,10 +162,30 @@ for several card-sized files.
 3. **Save image as** creates and verifies a new image. **Review changes** shows
    the original, working file, saved image and edit history. **Discard changes**
    recreates the working copy from the unchanged original.
-4. **Write image to card** asks you to choose the target anew, takes a fresh
-   verified complete backup of that target, presents one final write review,
-   writes, flushes and reads the written range back. A shorter image preserves
-   the remainder of a larger card; partitions do not expand.
+4. **Write image to card** shows the source image to read and asks you to choose
+   the target anew. By default it creates a fresh verified complete backup first.
+   You can explicitly turn that backup off. Review one final write confirmation,
+   then wait for writing, flushing and independent device readback. A shorter
+   image preserves the remainder of a larger card; partitions do not expand.
+
+## Write an existing image directly to an SD card
+
+1. Choose **Write image to card**, even with no image open in the editor.
+2. Under **Image file to read from**, choose your existing `NEWIMAGE.img`.
+   This file is opened read-only; the app will write its bytes to the card.
+3. To skip creating a backup, clear **Create and verify a backup of the card first**.
+   Direct mode overwrites existing card data without creating a recovery snapshot.
+4. Choose the destination card by its model, capacity and identity, then review
+   the single final **READ SOURCE IMAGE → WRITE DESTINATION CARD** confirmation.
+5. Authenticate and wait for **Card write verified** before removing the card.
+
+With the backup option enabled, the Save dialog is for a **new backup of the
+card's current contents**, not the source image. Its suggested name begins
+`BACKUP-before-NEWIMAGE-`. Use a different filename and keep existing backups.
+Direct mode has no Save dialog. Both modes retain device protection, size checks,
+source stability checks and mandatory readback verification. Direct writes require
+the 1.0.3 helper; update it using the administrator command above after any running
+card operation has finished.
 
 [User guide](docs/USER_GUIDE.md) · [Safety and recovery](docs/SAFETY.md) ·
 [Format and limitations](docs/FORMAT.md) · [Testing and spare-card checklist](docs/TESTING.md)
@@ -297,9 +317,12 @@ sector images are supported; headered JVC/DMK/VDK/HFE imports are rejected with
 an explanation. File contents and metadata are preserved without text conversion.
 
 Card commands are `devices`, `backup-card`, `verify-backup`, and `write-card`.
-`write-card` requires a verified **current-target** full backup, independently
-checks correspondence, and requires an interactive exact-device confirmation
-or `--confirm-device /dev/EXACT_DEVICE` for automation. See SAFETY.md before use.
+`write-card DEVICE IMAGE --backup SNAPSHOT` requires a verified **current-target**
+full backup and independently checks correspondence. Alternatively, explicit
+`--no-backup` selects direct mode and accepts the absence of a recovery snapshot.
+Both require an interactive exact-device confirmation or
+`--confirm-device /dev/EXACT_DEVICE` for automation. Both independently read back
+the written card range. See SAFETY.md before use.
 
 ## Development and tests
 
@@ -323,7 +346,7 @@ hashed; [provenance.json](docs/provenance.json) records actual sizes and SHA-256
 Those hashes establish reproducibility, not independent publisher authentication.
 The 2 GB-labelled reference contains **1,866,210,304** image bytes.
 
-Recorded 1.0.2 validation: **94 offline tests passed and 2 reference integration
+Recorded 1.0.3 validation: **104 offline tests passed and 2 reference integration
 tests passed**, with desktop startup and read-only selector inspection. This
 includes a synthetic T&D slot-31 import that preserves defaults, padding and
 unrelated data. Automated results are not physical-hardware proof; complete

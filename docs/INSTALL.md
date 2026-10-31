@@ -9,8 +9,8 @@ image operations are portable Python; real card access is Linux-only.
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.0.2-linux.tar.gz -C /tmp
-cd /tmp/drivepak-manager-1.0.2-linux
+tar -xzf dist/drivepak-manager-1.0.3-linux.tar.gz -C /tmp
+cd /tmp/drivepak-manager-1.0.3-linux
 sha256sum -c SHA256SUMS
 ./install-user.sh
 ```
@@ -57,6 +57,12 @@ Installed files:
 | /usr/local/libexec/drivepak-manager-helper | Fixed wrapper invoking `/usr/bin/python3 -I` |
 | /usr/local/libexec/drivepak-manager-helper.pyz | Root-owned, stdlib-only validated device endpoint |
 | /usr/share/polkit-1/actions/org.drivepak.manager.policy | Active-session administrator authentication |
+
+Direct writes introduced in 1.0.3 require updating an older installed helper:
+run the current package's `sudo ./install-helper.sh` after any active card
+operation has finished. If the app says the helper needs updating, no card was
+opened by that attempted direct operation. You do not need to reinstall the
+helper after each write.
 
 The system Python must be 3.11+ as well. The wrapper, zipapp and every ancestor
 directory must be root-owned and not group/world writable. The GUI checks that

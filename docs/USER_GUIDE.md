@@ -91,12 +91,25 @@ unchanged original. Working files remain on disk after closing; their displayed
 paths can be opened later. Manage old working files manually only after ensuring
 you have the originals/backups and saved results you want.
 
-**Write image to card** always starts with a new destination selection. Choose a
-new complete backup filename for that destination and wait for verification.
-Review the final dialog naming the exact target, image, current-target backup,
-written range and retained tail. Then confirm the write and authenticate. Wait
-for the independent card readback result. Never assume a successful image save
-means a card has been written.
+**Write image to card** starts by showing the **Image file to read from**.
+Choose an existing file such as `NEWIMAGE.img`; this works even without an image
+open in the editor. The source is read-only. Choose the exact destination card
+anew each time.
+
+**Create and verify a backup of the card first** is enabled by default. Its Save
+dialog asks for a new backup of the destination's current contents, with a
+suggested `BACKUP-before-…` filename. It does not ask to save the source image.
+Use a separate filename on independent storage and wait for backup verification.
+
+For direct writing, clear that checkbox. No Save dialog appears and no recovery
+backup is created. Existing card data will be overwritten; a failure may leave
+partial contents. Keep any earlier recovery images yourself. Direct writing
+requires the updated 1.0.3 helper (see INSTALL.md).
+
+Review the single final dialog naming **READ SOURCE IMAGE**, **WRITE DESTINATION
+CARD**, the backup or no-backup warning, written range and retained tail. Confirm
+and authenticate. Both modes require independent card readback before reporting
+success. Never assume a successful image save means a card has been written.
 
 Progress and cancellation are available for copies, transfers, search and card
 operations. Cancelling an image edit rolls it back. Cancelling a physical write

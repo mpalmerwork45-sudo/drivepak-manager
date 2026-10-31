@@ -13,10 +13,13 @@ import stat
 import struct
 from types import SimpleNamespace
 
+import pytest
+
 from drivepak_manager import helper
 from drivepak_manager.devices import Device
 from drivepak_manager.streams import write_json
 from drivepak_manager.backup import verify_backup
+from drivepak_manager.errors import SafetyError
 
 
 def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monkeypatch):
@@ -30,7 +33,7 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
     validated = []
 
     def validate(expected, storage_paths=(), storage_fds=()):
-        assert expected == d.identity and len(storage_fds) == 2
+        assert expected == d.identity and len(storage_fds) in (1, 2)
         validated.append(True)
         return d
 
@@ -67,13 +70,15 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
     monkeypatch.setattr(helper.fcntl, "ioctl", fake_ioctl)
     monkeypatch.setattr(Path, "read_text", lambda p, *a, **kw: "7" if str(p) == "/sys/dev/block/240:1/diskseq" else real_read_text(p, *a, **kw))
 
-    def request(operation, files, manifest=None):
+    def request(operation, files, manifest=None, acknowledge_no_backup=False):
         client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         client.settimeout(10)
         target_fds.clear()
         payload = {"operation": operation, "expected": d.identity}
         if manifest:
             payload["manifest"] = manifest
+        if acknowledge_no_backup:
+            payload["acknowledge_no_backup"] = True
 
         def serve():
             with server:
@@ -109,3 +114,38 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
     assert result["status"] == "verified" and len(validated) == 4
     assert target.read_bytes() == source.read_bytes() + before[1024:]
     assert backup.read_bytes() == before
+    source.write_bytes(b"\x52" * 1536)
+    previous = target.read_bytes()
+    with source.open("rb", buffering=0) as src:
+        result = request("write-direct", [src], acknowledge_no_backup=True)
+    target_fds.clear()
+    assert result["status"] == "verified" and result["backup_policy"] == "none-explicit-direct-write"
+    assert len(validated) == 6
+    assert target.read_bytes() == source.read_bytes() + previous[1536:]
+    assert backup.read_bytes() == before
+
+
+@pytest.mark.parametrize("acknowledgement", [None, False, 1, "true"])
+def test_direct_helper_requires_boolean_acknowledgement_before_device_access(tmp_path, monkeypatch, acknowledgement):
+    source = tmp_path / "source.img"
+    source.write_bytes(bytes(512))
+    monkeypatch.setattr(helper, "validate", lambda *a, **kw: pytest.fail("Unacknowledged request reached device validation"))
+    client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with client, server, source.open("rb") as src:
+        payload = {"operation": "write-direct", "expected": {}, "acknowledge_no_backup": acknowledgement}
+        client.sendmsg([json.dumps(payload).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [src.fileno()]))])
+        with pytest.raises(SafetyError, match="acknowledgement"):
+            helper.serve(server, os.getuid())
+
+
+def test_old_installed_helper_has_actionable_update_error_before_elevation(tmp_path, monkeypatch):
+    import zipfile
+    from drivepak_manager import linux
+    entry = tmp_path / "drivepak-manager-helper"
+    with zipfile.ZipFile(entry.with_name("drivepak-manager-helper.pyz"), "w") as archive:
+        archive.writestr("__main__.py", "pass\n")
+    monkeypatch.setattr(linux, "HELPER", entry)
+    monkeypatch.setattr(linux, "helper_installed", lambda: True)
+    monkeypatch.setattr(linux.subprocess, "Popen", lambda *a, **kw: pytest.fail("Outdated helper was elevated"))
+    with pytest.raises(SafetyError, match="install-helper.sh.*No device was opened"):
+        linux.invoke("write-direct", {}, [], acknowledge_no_backup=True)
