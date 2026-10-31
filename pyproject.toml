@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "drivepak-manager"
-version = "1.0.1"
+version = "1.0.2"
 description = "Desktop image and SD card utility for the CoCoNet MicroSD Drive Pak"
 readme = "README.md"
 requires-python = ">=3.11"

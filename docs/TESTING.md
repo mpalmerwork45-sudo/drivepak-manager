@@ -6,7 +6,7 @@ enumeration was exercised. The actual PySide6 Widgets interface was launched on
 the X desktop, browsed and visually inspected. The helper was staged under `/tmp`,
 with no system installation or configuration change.
 
-Recorded results (2026-10-31): **91 offline tests passed, 2 reference tests
+Recorded results (2026-10-31): **94 offline tests passed, 2 reference tests
 skipped by default; both opt-in reference integration tests passed**.
 
 ## Reproduce

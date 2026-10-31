@@ -355,6 +355,11 @@ class MainWindow(QMainWindow):
         self.state_label.setWordWrap(True)
         self.state_label.setStyleSheet("padding: 8px; border: 1px solid palette(mid); border-radius: 4px;")
         root.addWidget(self.state_label)
+        self.layout_notice = QLabel()
+        self.layout_notice.setWordWrap(True)
+        self.layout_notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.layout_notice.hide()
+        root.addWidget(self.layout_notice)
         search_row = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Filter the current directory by name")
@@ -497,6 +502,16 @@ class MainWindow(QMainWindow):
             if key in ("import_os9", "export_os9"):
                 enabled = os9 and known and (valid or key == "export_os9")
             action.setEnabled(enabled and not busy)
+        if busy:
+            import_tip = "Wait for the current operation to finish."
+        elif not loaded:
+            import_tip = "Open an image or verified card backup first."
+        elif not valid:
+            import_tip = "Import is unavailable: " + "; ".join(layout.errors)
+        else:
+            import_tip = "Choose raw disk images, then review the destination partition and numbered slot for each disk."
+        self.actions["import_disk"].setToolTip(import_tip)
+        self.actions["import_disk"].setStatusTip(import_tip)
         self.search_all.setEnabled(known and not busy)
         self.search_all.setToolTip("Search filenames across validated Disk BASIC banks" if known else "Card addressing must be recognised before searching logical disks")
         self.search.setEnabled(not busy)
@@ -514,6 +529,9 @@ class MainWindow(QMainWindow):
         if self.session:
             s = self.session
             layout = s.image.layout()
+            notices = layout.errors or layout.warnings
+            self.layout_notice.setText(("Image editing is unavailable: " if layout.errors else "Layout notes: ") + "; ".join(notices[:3]))
+            self.layout_notice.setVisible(bool(notices))
             for p in layout.partitions:
                 node = QTreeWidgetItem([f"{p.index}: {p.name} · {p.label}" + (f" · {p.disks} disks" if p.kind == 2 else "")])
                 node.setData(0, Qt.ItemDataRole.UserRole, (p.index, None))
@@ -539,6 +557,7 @@ class MainWindow(QMainWindow):
             self.directory_status.setText("; ".join(layout.errors) or f"{len(layout.partitions)} partitions. Select a disk to browse; select multiple disks for batch export.")
             self.setWindowTitle(f"DrivePak Manager — {s.original.name}" + (" *" if s.changes and not s.saved_as else ""))
         else:
+            self.layout_notice.hide()
             self.identity_label.setText("Open an image, create a blank image, or select a card to back it up and begin editing.")
             self.state_label.setText("Card workflow: Select card → verified complete backup → separate working image → edit → review → write → readback verify")
             self.directory_status.setText("Image files and card backups are kept unchanged. All edits use a separate working image.")

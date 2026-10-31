@@ -133,6 +133,61 @@ def test_gui_progress_handles_larger_than_four_gigabytes(qtbot):
     window.close()
 
 
+def test_import_tandd_slot_31_with_os9_default_in_a_floppy_bank(qtbot, legacy_mixed_card, tmp_path, monkeypatch):
+    from drivepak_manager.filesystems.decb import blank_disk
+    from drivepak_manager.streams import hash_file
+    original_digest = hash_file(legacy_mixed_card)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    monkeypatch.setattr(window, "can_replace_session", lambda: True)
+    errors = []
+    monkeypatch.setattr(window, "fail", errors.append)
+    window.open_path(legacy_mixed_card)
+    settle(qtbot, window)
+    bank = window.tree.topLevelItem(1)
+    assert "T&D" in bank.text(0) and bank.childCount() == 32
+    window.tree.setCurrentItem(bank.child(31))
+    settle(qtbot, window)
+    assert window.current == (1, 31) and window.actions["import_disk"].isEnabled()
+    assert not window.layout_notice.isHidden() and "Default U3" in window.layout_notice.text()
+    source = tmp_path / "game.dsk"
+    payload = bytearray(blank_disk()[:161280])
+    payload[:16] = b"ORIGINAL GAME!!!"
+    source.write_bytes(payload)
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *a, **kw: ([str(source)], ""))
+    def accept_mapping(dialog):
+        assert dialog.mappings() == [(1, 31, str(source))]
+        assert "T&D" in dialog.combos[0].currentText()
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(MappingDialog, "exec", accept_mapping)
+    window.actions["import_disk"].trigger()
+    settle(qtbot, window)
+    assert not errors and window.session.changes
+    assert window.session.image.volume(1, 31).read(0, len(payload)) == payload
+    assert window.session.image.layout().defaults["U3"] == 1024
+    assert hash_file(legacy_mixed_card) == original_digest
+    window.close()
+
+
+def test_structural_error_remains_visible_when_browsing_a_disk(qtbot, card, tmp_path, monkeypatch):
+    b = bytearray(card.read_bytes())
+    b[21:24] = b"\0\0\x07"  # default points outside every live partition start
+    card.write_bytes(b)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    window.open_path(card)
+    settle(qtbot, window)
+    window.tree.setCurrentItem(window.tree.topLevelItem(0).child(0))
+    settle(qtbot, window)
+    assert not window.actions["import_disk"].isEnabled()
+    assert "Default DOS" in window.actions["import_disk"].toolTip()
+    assert "Default DOS" in window.layout_notice.text()
+    assert not window.layout_notice.isHidden()
+    window.close()
+
+
 def test_gui_file_partition_and_os9_workflows(qtbot, tmp_path, os9_volume, monkeypatch):
     from PySide6.QtWidgets import QInputDialog, QLineEdit, QSpinBox
     from drivepak_manager.image import create_blank

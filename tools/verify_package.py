@@ -7,8 +7,8 @@ import zipfile
 
 root = Path(__file__).resolve().parents[1]
 dist = root / "dist"
-stage = dist / "drivepak-manager-1.0.1-linux"
-for name in ("drivepak-manager-1.0.1-linux.tar.gz", "drivepak_manager-1.0.1.tar.gz"):
+stage = dist / "drivepak-manager-1.0.2-linux"
+for name in ("drivepak-manager-1.0.2-linux.tar.gz", "drivepak_manager-1.0.2.tar.gz"):
     with tarfile.open(dist / name) as t:
         for item in t.getmembers():
             p = Path(item.name)
@@ -19,7 +19,7 @@ with zipfile.ZipFile(stage / "drivepak-manager-helper.pyz") as z:
     assert set(z.namelist()) == {"__main__.py", *("drivepak_manager/" + x for x in ("__init__.py", "errors.py", "streams.py", "backup.py", "devices.py", "helper.py"))}
     for name in z.namelist():
         compile(z.read(name), name, "exec")
-with zipfile.ZipFile(dist / "drivepak_manager-1.0.1-py3-none-any.whl") as z:
+with zipfile.ZipFile(dist / "drivepak_manager-1.0.2-py3-none-any.whl") as z:
     assert any(x.endswith("licenses/THIRD_PARTY.md") for x in z.namelist())
 policy = ET.parse(stage / "org.drivepak.manager.policy")
 assert policy.findtext("action/defaults/allow_active") == "auth_admin"

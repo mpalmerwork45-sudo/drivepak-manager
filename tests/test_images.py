@@ -265,6 +265,43 @@ def test_import_formats_rejected(tmp_path):
             read_disk_file(p)
 
 
+def test_os9_default_in_floppy_bank_allows_import_without_changing_reference(legacy_mixed_card, tmp_path):
+    image_path = legacy_mixed_card
+    start = (1024 + 2880 + 31 * 2880) * 512
+    end = start + 2880 * 512
+    def unrelated_digest():
+        h = hashlib.sha256()
+        with image_path.open("rb") as f:
+            for first, last in ((0, start), (end, image_path.stat().st_size)):
+                f.seek(first)
+                remaining = last - first
+                while remaining:
+                    b = f.read(min(65536, remaining))
+                    assert b
+                    h.update(b)
+                    remaining -= len(b)
+        return h.hexdigest()
+    untouched = unrelated_digest()
+    source = tmp_path / "game.dsk"
+    data = b"\x7d" * 161280
+    source.write_bytes(data)
+    with Image(image_path, True) as image:
+        layout = image.layout()
+        assert layout.editable and not layout.errors
+        assert any("Default U3" in w for w in layout.warnings)
+        assert layout.defaults["U3"] == 1024 and layout.partition(0).kind == 2
+        assert OS9(image.volume(0)).list_dir()
+        before = image.read(start, 2880 * 512)
+        image.import_disks([(1, 31, source)], "zero")
+        after = image.read(start, 2880 * 512)
+        assert image.volume(1, 31).read(0, len(data)) == data
+        assert image.volume(1, 31).read(len(data), 256) == bytes(256)
+        assert image.layout().defaults["U3"] == 1024
+        assert OS9(image.volume(0)).list_dir()
+        assert all(before[n * 512 + 256:(n + 1) * 512] == after[n * 512 + 256:(n + 1) * 512] for n in range(2880))
+    assert unrelated_digest() == untouched
+
+
 @pytest.mark.parametrize("count", [0, 1, 127, 128, 129, 1023, 1024])
 def test_table_count_limits_and_name_is_not_magic(tmp_path, count):
     path = tmp_path / "table.img"

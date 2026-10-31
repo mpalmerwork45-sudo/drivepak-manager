@@ -1,7 +1,7 @@
 # Supported CoCoNet Drive Pak profile
 
 This document describes observations and the conservative profile implemented
-by DrivePak Manager 1.0.1. It is not a universal Drive Pak specification. CoCo SDC,
+by DrivePak Manager 1.0.2. It is not a universal Drive Pak specification. CoCo SDC,
 FAT32-hosted disk collections, and undocumented future 32-bit addressing are
 outside this profile. Unsupported images can still be copied, completely backed
 up from a safe card, restored as raw bytes, and inspected diagnostically.
@@ -47,7 +47,11 @@ are within its first 256 bytes:
 Nonzero address-extension bytes disable edits: the implementation does not guess
 whether they are fillers or future address bits. Other reserved bytes survive
 unchanged. Zero defaults are retained as unassigned; the reference has all six
-zero. Nonzero defaults must identify one compatible live partition start.
+zero. Nonzero defaults must identify one unique live partition start. Partition
+type labels do not prove the filesystem inside every floppy: legacy cards can
+point an OS-9 default to an OS-9-formatted disk in a type-2 bank. Such a label
+difference is reported as an advisory and the pointer is retained byte-for-byte;
+it does not prevent editing unrelated, bounded disk payloads.
 
 Follow the table pointer. Each successive table entry is in its **own card
 sector**, rather than packed into a single sector:

@@ -84,3 +84,41 @@ def os9_volume(tmp_path):
     p = tmp_path / "test.os9"
     p.write_bytes(b)
     return p
+
+
+@pytest.fixture
+def legacy_mixed_card(tmp_path, os9_volume):
+    """Sparse synthetic bank with slot 31 and an OS-9 floppy default in type 2."""
+    path = tmp_path / "legacy-mixed.img"
+    os9_start, bank_start = 1024, 1024 + 2880
+    header = bytearray(512)
+    header[:8] = b"TESTCARD"
+    header[128:144] = b"reserved-header!"
+    header[256:] = b"\x93" * 256
+    put24(header, 17, 1)
+    put24(header, 21, bank_start)
+    put24(header, 41, os9_start)  # /U3 points to an OS-9 floppy in a type-2 bank
+    blank = bytearray(737280)
+    blank[307 * 256:307 * 256 + 68] = b"\xff" * 68
+    blank[308 * 256:317 * 256] = b"\xff" * (9 * 256)
+    with path.open("w+b") as f:
+        f.truncate((bank_start + 32 * 2880 + 2) * 512)
+        f.write(header)
+        for idx, name, start, count in ((0, "OS9TEST", os9_start, 2880), (1, "T&D", bank_start, 32 * 2880)):
+            entry = bytearray(b"\xa6" * 512)
+            entry[0] = 2
+            entry[1:17] = name.encode().ljust(15, b" ") + b"\0"
+            put24(entry, 32, start)
+            put24(entry, 35, count)
+            f.seek((idx + 1) * 512)
+            f.write(entry)
+        f.seek(3 * 512)
+        f.write(b"\xff")
+        raw = os9_volume.read_bytes()
+        for n in range(len(raw) // 256):
+            f.seek((os9_start + n) * 512)
+            f.write(raw[n * 256:(n + 1) * 256] + b"\x39" * 256)
+        f.seek((bank_start + 31 * 2880) * 512)
+        for n in range(2880):
+            f.write(blank[n * 256:(n + 1) * 256] + b"\x5a" * 256)
+    return path

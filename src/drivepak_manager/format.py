@@ -167,5 +167,9 @@ def inspect(reader):
             if len(matches) != 1:
                 out.errors.append(f"Default {key} has an ambiguous partition reference.")
             elif (key == "DOS" and matches[0].kind != 2) or (key != "DOS" and matches[0].kind not in (3, 4)):
-                out.errors.append(f"Default {key} references an incompatible partition type.")
+                # Entry types classify banks/volumes, not the filesystem of
+                # every disk. Legacy cards can assign /U3 to an OS-9 floppy
+                # stored in a type-2 bank. Preserve the address and treat the
+                # label mismatch as advisory; bounds/ownership still gate edits.
+                out.warnings.append(f"Default {key} points to {matches[0].name} with a different partition label. The stored reference is preserved; disk contents determine its filesystem.")
     return out

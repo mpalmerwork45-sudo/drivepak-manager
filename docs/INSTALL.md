@@ -9,8 +9,8 @@ image operations are portable Python; real card access is Linux-only.
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.0.1-linux.tar.gz -C /tmp
-cd /tmp/drivepak-manager-1.0.1-linux
+tar -xzf dist/drivepak-manager-1.0.2-linux.tar.gz -C /tmp
+cd /tmp/drivepak-manager-1.0.2-linux
 sha256sum -c SHA256SUMS
 ./install-user.sh
 ```

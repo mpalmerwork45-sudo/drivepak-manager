@@ -22,6 +22,16 @@ native file selection and then a mapping table: each source, destination bank,
 zero-based slot, byte length and current contents are visible. Set slots explicitly;
 duplicate destinations are rejected. Importing several disks is one rollback unit.
 
+For example, expand **T&D**, select **Disk 031**, then choose **Import disk(s)**.
+Select a raw `.dsk` from your Linux files, confirm **T&D** and slot **31** in the
+mapping preview, and click **Import mapped disks**. This replaces that slot's
+contents in the working copy. Save a new image, then use **Write image to card**
+when ready to transfer it back through the verified backup/write workflow.
+
+If import is disabled, a persistent explanation above the browser and the
+action's tooltip identify the blocking layout issue. Informational notes about
+preserved legacy default-drive labels do not block supported disk imports.
+
 Choose how a smaller raw floppy fills its larger slot: clear unused logical data
 to zero, fill it with FF, or keep the destination's existing tail. This never
 changes physical padding. Headered emulator formats are rejected; supply raw

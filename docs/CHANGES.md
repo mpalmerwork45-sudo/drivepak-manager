@@ -1,5 +1,18 @@
 # Changes
 
+## 1.0.2
+
+* Corrected an overly strict default-drive check that disabled all image editing
+  when an OS-9 default referenced a valid OS-9 floppy in a type-2 bank. Partition
+  classification is advisory; existing pointers and entry types are preserved.
+* Structural checks for bounds, overlapping regions, ambiguous addressing and
+  invalid/dangling defaults still prevent unsafe edits.
+* Layout restrictions stay visible while browsing, and disabled import actions
+  explain their reason through a tooltip/status message.
+* Added a synthetic legacy-card regression that imports a raw floppy into T&D
+  slot 31 and verifies that defaults, padding, the OS-9 volume and every unrelated
+  byte are unchanged. The GUI mapping and preserved-source workflow are covered.
+
 ## 1.0.1
 
 * Empty USB reader slots no longer appear available. Zero/missing/invalid card

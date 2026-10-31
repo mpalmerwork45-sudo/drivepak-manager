@@ -8,7 +8,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
-NAME = "drivepak-manager-1.0.1-linux"
+NAME = "drivepak-manager-1.0.2-linux"
 stage = DIST / NAME
 stage.mkdir(parents=True, exist_ok=True)
 # A fixed member list avoids accidentally packaging GUI libraries, caches or data.
@@ -25,7 +25,7 @@ for path in (ROOT / "packaging").iterdir():
 for name in ("README.md", "LICENSE", "THIRD_PARTY.md", "requirements-runtime.lock"):
     shutil.copyfile(ROOT / name, stage / name)
 shutil.copytree(ROOT / "docs", stage / "docs", dirs_exist_ok=True)
-wheel = DIST / "drivepak_manager-1.0.1-py3-none-any.whl"
+wheel = DIST / "drivepak_manager-1.0.2-py3-none-any.whl"
 shutil.copyfile(wheel, stage / wheel.name)
 checksums = "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(stage)}\n" for p in sorted(stage.rglob("*")) if p.is_file() and p.name != "SHA256SUMS")
 (stage / "SHA256SUMS").write_text(checksums)
