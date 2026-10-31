@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drivepak-manager"
+version = "1.0.0"
+description = "Desktop image and SD card utility for the CoCoNet MicroSD Drive Pak"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY.md"]
+authors = [{name = "DrivePak Manager contributors"}]
+dependencies = ["PySide6==6.10.0"]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2", "pytest-qt==4.5.0"]
+
+[project.scripts]
+drivepak = "drivepak_manager.cli:main"
+
+[project.gui-scripts]
+drivepak-manager = "drivepak_manager.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["reference: requires cached, unmodified public reference image"]
+qt_api = "pyside6"

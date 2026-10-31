@@ -1,0 +1,10 @@
+include LICENSE THIRD_PARTY.md README.md requirements*.lock AGENTS.md .editorconfig .gitattributes .gitignore
+recursive-include src *.py
+recursive-include docs *.md *.json
+recursive-include tests *.py
+recursive-include tools *.py *.sh
+recursive-include packaging *.sh *.desktop *.svg *.policy drivepak-manager-helper
+prune data
+prune backups
+prune exports
+prune artifacts

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DrivePak Manager
+Comment=Manage CoCoNet MicroSD Drive Pak images and cards
+Exec=drivepak-manager %f
+Icon=drivepak-manager
+Terminal=false
+Categories=Utility;System;
+MimeType=application/x-raw-disk-image;
+StartupNotify=true

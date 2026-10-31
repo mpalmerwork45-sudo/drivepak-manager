@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fixed root-owned endpoint. Isolated Python excludes user/site/PYTHONPATH code.
+exec /usr/bin/python3 -I /usr/local/libexec/drivepak-manager-helper.pyz "$@"

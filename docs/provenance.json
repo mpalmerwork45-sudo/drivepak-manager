@@ -1,0 +1,194 @@
+{
+  "notice": "Locally calculated SHA-256 establishes reproducibility, not independent publisher authentication.",
+  "files": [
+    {
+      "path": "data/reference/manual.pdf",
+      "url": "https://colorcomputerarchive.com/repo/Documents/Manuals/Hardware/MicroSD%20Drive%20Pak%20Quick%20Docs%20%28Roger%20Taylor%29.pdf",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 47079,
+      "sha256": "7bd636143bd1af752644678b4c77979e7b447ad3c02ddb0c54cacd6fc30c0c1d"
+    },
+    {
+      "path": "data/reference/explorer.zip",
+      "url": "https://colorcomputerarchive.com/repo/Programming/Source/DrivePak%20Explorer/DrivePak%20Explorer%201.00%20Source%20Code%20%28Guillaume%20Major%29.zip",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 17027,
+      "sha256": "df6574ecfa8b016ec02e1651ab6d3672a73dea2494277682c504bf945ba410c3"
+    },
+    {
+      "path": "data/reference/explorer/dpx.asm",
+      "archive": "data/reference/explorer.zip",
+      "member": "dpx.asm",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 58497,
+      "sha256": "dbd86133653279decc37b77acdb4751a0da1517d0720072e66c08020ae535e59"
+    },
+    {
+      "path": "data/reference/explorer/dpx.bas",
+      "archive": "data/reference/explorer.zip",
+      "member": "dpx.bas",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 142,
+      "sha256": "55736cbf2435371151aad2fc16d8d500b8e80e80462e065e4186417c8e06f9c8"
+    },
+    {
+      "path": "data/reference/explorer/dpxcmp.bas",
+      "archive": "data/reference/explorer.zip",
+      "member": "dpxcmp.bas",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 155,
+      "sha256": "4add145315f349778f16b15cb926e96bfe17359d56439036ea22151db1660a37"
+    },
+    {
+      "path": "data/reference/explorer/DUMP.BAS",
+      "archive": "data/reference/explorer.zip",
+      "member": "DUMP.BAS",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 358,
+      "sha256": "8bf2183f5fcd760730569fb043da7c4ba2cd811f17b8d95943ce7f1a9eb25f33"
+    },
+    {
+      "path": "data/reference/explorer/Makefile",
+      "archive": "data/reference/explorer.zip",
+      "member": "Makefile",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 1097,
+      "sha256": "1e09fd40cff7643e15889de53e43e979c9bea0b3de520c868e53ebbe8d5da019"
+    },
+    {
+      "path": "data/reference/explorer/partarr.asm",
+      "archive": "data/reference/explorer.zip",
+      "member": "partarr.asm",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 2087,
+      "sha256": "90994bb23c6b9e3f57b4719a610f56c4c815f4e5ba1513556717a4541cef0b76"
+    },
+    {
+      "path": "data/reference/drivepak-2gb.zip",
+      "url": "https://colorcomputerarchive.com/repo/Disks/DrivePak/Image/DrivePak%202GB%20Image%20%282022-02-11%29.zip",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 106435653,
+      "sha256": "6025454b5b1ac602af745d887b9ddce339db96d056e9c126e012f691c11d3c94"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/DrivePak 2GB Image Index.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/DrivePak 2GB Image Index.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 3867,
+      "sha256": "1171c8902e295ec4a37455e06ae0fa0555c40dad1a080ae210f0b12374654b0d"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/drivepak-2gb.img",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/drivepak-2gb.img",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 1866210304,
+      "sha256": "8f46cf246b6b625efc171b3e25b805bdca89496c2a34b8491fcf4600dd8cf2c2"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/agd.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/agd.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 8681,
+      "sha256": "84d776b716f9a61e481587ac744bb9476e4bcfdfcff549b8369ea13dd94e04e4"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/ar_files.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/ar_files.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 9213,
+      "sha256": "626cd0ce479e3431edb45779cbc6ed6e20ffe6ef86241fdcae908f9e434d73b8"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/cis.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/cis.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 97913,
+      "sha256": "63e459624ff9b132ba3289b12332fccd1faa6dc52ac2c9f490cdeec2c30eeab1"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/delphi.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/delphi.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 10274,
+      "sha256": "14968d7437cfe47cf29768e851e81a62adae466057311eecbb6883129d6eae02"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/demo.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/demo.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 3602,
+      "sha256": "5eef91ced6edeab9e50afc82bf57ef75bf2a6c7526b19fc3d3cae136c355eb0e"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/dos.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/dos.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 78104,
+      "sha256": "866670915ab2214ae6126c18a6456522caaf5d4088f23b700dc9788dd44d0c63"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/edu.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/edu.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 4472,
+      "sha256": "13be81b99007ff6b872ea96c0574eb8eaffc155da0d060b5b1225ae7e12390c3"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/genie.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/genie.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 50821,
+      "sha256": "b1e8d6977b9f31fe23d13de30af4bb02c25a4ab8c35958fb80ce219eb74d8657"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/ocn.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/ocn.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 81199,
+      "sha256": "00ef93625bdd6d8bbd17f645304ec25fcb074442cbe851cf43547a55125f4d43"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/os9ug.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/os9ug.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 36023,
+      "sha256": "949cca72477c07d9aa2aa8657ceb19bf1686033dd19f13438409d8ba5c471315"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/princeton.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/princeton.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 41479,
+      "sha256": "7dfe7bbc9dca6abb5b015c2e882da213c9652859f59ebedb51e6a741e93d843a"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/rtsi.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/rtsi.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 153311,
+      "sha256": "efd3d62e6015394ea64a5e47a1f21080d9e0c4d9c5af058495e0cb02dbf692a7"
+    },
+    {
+      "path": "data/reference/card-2gb/DrivePak 2GB Image/index/sierra.txt",
+      "archive": "data/reference/drivepak-2gb.zip",
+      "member": "DrivePak 2GB Image/index/sierra.txt",
+      "retrieved_utc": "2026-10-31T09:23:26.706619+00:00",
+      "bytes": 986,
+      "sha256": "750a602f4fc404272a8735bfc34c8e1c3f9e6977d66017c51caeda804d6758c7"
+    }
+  ]
+}

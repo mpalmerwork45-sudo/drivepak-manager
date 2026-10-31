@@ -1,0 +1,95 @@
+# Using DrivePak Manager
+
+## Start with a copy
+
+**Open image** accepts a raw `.img` and creates a separate verified working file.
+The original path and working path stay visible. If the selected image has a
+known backup manifest, it is verified as well. **Back up card / Open card** first
+lists Linux devices. Choose an available external reader; if its volumes are
+mounted, use the deliberate unmount button and wait for reinspection. Choose a
+backup directory on another device. Wait for copying, saved-backup verification
+and a second source-stability pass before the working image opens.
+
+The banner distinguishes working changes, a saved image, backup status and an
+actual verified card write. Saving an image does not write a card. The optional
+**View → Technical details** panel shows addresses, defaults, diagnostics and free
+regions. **File → Save diagnostics** works with unrecognised layouts as well.
+
+## Add games as disks
+
+Expand a Disk BASIC partition and choose a disk number. **Import disk(s)** opens
+native file selection and then a mapping table: each source, destination bank,
+zero-based slot, byte length and current contents are visible. Set slots explicitly;
+duplicate destinations are rejected. Importing several disks is one rollback unit.
+
+Choose how a smaller raw floppy fills its larger slot: clear unused logical data
+to zero, fill it with FF, or keep the destination's existing tail. This never
+changes physical padding. Headered emulator formats are rejected; supply raw
+sector data. Supported sizes and interpretations are in FORMAT.md.
+
+**Export disk(s)** transfers selected disk rows. Ctrl/Shift-select multiple rows
+for batch export; review the resulting filenames and destination directory.
+Choose the export length explicitly. Full slot exports all 737280 payload bytes.
+Smaller choices omit the tail; they cannot prove the original file length. Existing
+outputs are protected, and exported GUI disks include an explanatory JSON sidecar.
+
+Use the current-directory filter or **Search disks** for filenames across BASIC
+banks. Search reports unrecognised filesystems that were skipped. Unsupported
+disks can still be transferred as raw slots when their extents are safe.
+
+## Manage files
+
+Select a BASIC disk to browse files and standard filesystem free space. **Files →
+Insert file** accepts verbatim host-file bytes; select the 8.3 name, file type and
+ASCII/binary metadata. Those settings never change line endings or binary bytes.
+An extraction `.drivepak.json` sidecar restores the original metadata after its
+checksum is validated. Replacement is an explicit option in the insert dialog.
+
+Select file rows and use **Extract file(s)** to choose a directory. Each result
+includes a metadata sidecar. **Rename file** changes the name, and **Delete file**
+removes its directory/FAT references in the working image. Disk BASIC's usual
+68-granule space limit applies even inside a much larger floppy slot. Invalid or
+ambiguous filesystems show a concrete reason and disable unsafe file edits.
+
+For an OS-9 partition, double-click directories and use **Up**. Files can be
+extracted without conversion. **Export OS-9 volume** transfers the complete stored
+partition payload; **Replace OS-9 volume** requires a validated raw volume of the
+same sector count. Use a new partition for a differently sized volume. Individual
+OS-9 file modification is outside this release. An inconsistent extent gets a
+specific warning; diagnostic raw export does not pretend to repair it.
+
+## Partitions and blank images
+
+**Create blank image** asks for a physical capacity, card name and number of empty
+DOS slots. It supplies no games, firmware or boot programs. Under **Partitions →
+Create partition / Add OS-9 volume**, choose a name and empty BASIC bank size, or
+select a raw OS-9 volume. Free physical space is displayed; existing partitions
+are not moved and live disk numbers are preserved. New/renamed names allow 15
+ASCII characters; use eight or fewer for Explorer's display compatibility.
+
+Rename/delete operate on the selected partition. Delete leaves its old data
+intact but makes its space available for future allocation. The dialog lists
+affected default drives and lets you choose a compatible replacement or an
+unassigned pointer. **Set default drive** explicitly assigns a selected bank or
+OS-9 volume. Table entry positions are retained instead of compacted.
+
+## Save, write and recover
+
+**Save image as** writes and verifies a new file. **Review changes** shows paths
+and the edit history. **Discard changes** recreates the working copy from its
+unchanged original. Working files remain on disk after closing; their displayed
+paths can be opened later. Manage old working files manually only after ensuring
+you have the originals/backups and saved results you want.
+
+**Write image to card** always starts with a new destination selection. Choose a
+new complete backup filename for that destination and wait for verification.
+Review the final dialog naming the exact target, image, current-target backup,
+written range and retained tail. Then confirm the write and authenticate. Wait
+for the independent card readback result. Never assume a successful image save
+means a card has been written.
+
+Progress and cancellation are available for copies, transfers, search and card
+operations. Cancelling an image edit rolls it back. Cancelling a physical write
+can leave incomplete contents: keep the backup and follow the complete recovery
+steps in SAFETY.md. To restore an older snapshot, open it as an image, then use
+the normal write workflow with a new snapshot of the card's present contents.
