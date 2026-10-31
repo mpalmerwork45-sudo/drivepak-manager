@@ -70,7 +70,7 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
     monkeypatch.setattr(helper.fcntl, "ioctl", fake_ioctl)
     monkeypatch.setattr(Path, "read_text", lambda p, *a, **kw: "7" if str(p) == "/sys/dev/block/240:1/diskseq" else real_read_text(p, *a, **kw))
 
-    def request(operation, files, manifest=None, acknowledge_no_backup=False):
+    def request(operation, files, manifest=None, acknowledge_no_backup=False, acknowledge_in_place=False):
         client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         client.settimeout(10)
         target_fds.clear()
@@ -79,6 +79,8 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
             payload["manifest"] = manifest
         if acknowledge_no_backup:
             payload["acknowledge_no_backup"] = True
+        if acknowledge_in_place:
+            payload["acknowledge_in_place"] = True
 
         def serve():
             with server:
@@ -97,6 +99,9 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
                 if event["event"] == "result":
                     future.result(timeout=5)
                     return event["result"]
+                if event["event"] == "recovery-ready":
+                    write_json(tmp_path / "edits.dpp.json", event["manifest"])
+                    client.send(b"recovery-saved")
 
     backup = tmp_path / "backup.img"
     with backup.open("w+b", buffering=0) as out, backup.open("rb", buffering=0) as readback:
@@ -123,16 +128,31 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
     assert len(validated) == 6
     assert target.read_bytes() == source.read_bytes() + previous[1536:]
     assert backup.read_bytes() == before
+    from drivepak_manager.patches import prepare_changes
+    original, modified, journal = [tmp_path / n for n in ("original.img", "modified.img", "edits.dpp")]
+    original.write_bytes(target.read_bytes())
+    b = bytearray(original.read_bytes())
+    b[513], b[2050] = 0x66, 0x77
+    modified.write_bytes(b)
+    prepare_changes(original, modified, journal)
+    with journal.open("rb", buffering=0) as src:
+        result = request("write-patch", [src], acknowledge_in_place=True)
+    target_fds.clear()
+    assert result["status"] == "verified" and result["bytes_written"] == 1024
+    assert target.read_bytes() == modified.read_bytes()
+    assert json.loads((tmp_path / "edits.dpp.json").read_text())["kind"] == "changed-sector-recovery"
 
 
+@pytest.mark.parametrize("operation", ["write-direct", "write-patch"])
 @pytest.mark.parametrize("acknowledgement", [None, False, 1, "true"])
-def test_direct_helper_requires_boolean_acknowledgement_before_device_access(tmp_path, monkeypatch, acknowledgement):
+def test_write_helper_requires_boolean_acknowledgement_before_device_access(tmp_path, monkeypatch, acknowledgement, operation):
     source = tmp_path / "source.img"
     source.write_bytes(bytes(512))
     monkeypatch.setattr(helper, "validate", lambda *a, **kw: pytest.fail("Unacknowledged request reached device validation"))
     client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     with client, server, source.open("rb") as src:
-        payload = {"operation": "write-direct", "expected": {}, "acknowledge_no_backup": acknowledgement}
+        key = "acknowledge_no_backup" if operation == "write-direct" else "acknowledge_in_place"
+        payload = {"operation": operation, "expected": {}, key: acknowledgement}
         client.sendmsg([json.dumps(payload).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [src.fileno()]))])
         with pytest.raises(SafetyError, match="acknowledgement"):
             helper.serve(server, os.getuid())

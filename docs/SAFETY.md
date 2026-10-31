@@ -168,6 +168,13 @@ automatic destructive retry. The GUI event loop remains active while waiting.
 
 ## Manual recovery
 
+Version 1.1.0 also supports image-derived changed-sector updates. See
+[CARD_EDITS.md](CARD_EDITS.md) for the full preconditions and recovery boundary.
+The existing image-sized card range must match the editor original. A durable
+before/after journal and verified receipt are required before any card edit.
+This is a partial recovery facility, not a substitute for a complete physical
+backup. Recovery rejects affected sectors matching neither known version.
+
 1. Keep the earlier verified backup and its manifest. Do not overwrite/delete it.
 2. Reconnect the spare card if needed and refresh/select it by identity. Do not
    assume the old device path still names the same hardware.

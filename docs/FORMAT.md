@@ -1,7 +1,7 @@
 # Supported CoCoNet Drive Pak profile
 
 This document describes observations and the conservative profile implemented
-by DrivePak Manager 1.0.4. It is not a universal Drive Pak specification. CoCo SDC,
+by DrivePak Manager 1.1.0. It is not a universal Drive Pak specification. CoCo SDC,
 FAT32-hosted disk collections, and undocumented future 32-bit addressing are
 outside this profile. Unsupported images can still be copied, completely backed
 up from a safe card, restored as raw bytes, and inspected diagnostically.

@@ -9,8 +9,8 @@ image operations are portable Python; real card access is Linux-only.
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.0.4-linux.tar.gz -C /tmp
-cd /tmp/drivepak-manager-1.0.4-linux
+tar -xzf dist/drivepak-manager-1.1.0-linux.tar.gz -C /tmp
+cd /tmp/drivepak-manager-1.1.0-linux
 sha256sum -c SHA256SUMS
 ./install-user.sh
 ```
@@ -67,6 +67,12 @@ helper after each write.
 The system Python must be 3.11+ as well. The wrapper, zipapp and every ancestor
 directory must be root-owned and not group/world writable. The GUI checks that
 before invoking pkexec. No user-supplied Python path is imported by the helper.
+
+Changed-sector apply/recovery requires the 1.1.0 helper. Install the current
+distribution's helper after any active operation has finished; older helpers
+are rejected before device open for these operations. Updating the helper does
+not itself access a card. See [CARD_EDITS.md](CARD_EDITS.md) for the image-based
+partial-update workflow and its recovery limits.
 Polkit uses `auth_admin`, not a persistent/passwordless authorization. A normal
 Kubuntu session provides its authentication agent. UDisks handles deliberate
 unmount requests through its existing service.

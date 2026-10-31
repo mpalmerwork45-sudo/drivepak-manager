@@ -12,7 +12,8 @@ from .errors import DrivePakError, SafetyError, FormatError
 from .filesystems.decb import DECB
 from .filesystems.os9 import OS9
 from .image import Image, RAW_DISK_SIZES, create_blank
-from .linux import backup_card, write_card, write_card_direct
+from .linux import backup_card, write_card, write_card_direct, apply_card_changes
+from .patches import prepare_changes
 from .streams import copy_verified
 
 
@@ -121,6 +122,21 @@ def parser():
     policy = x.add_mutually_exclusive_group(required=True)
     policy.add_argument("--backup")
     policy.add_argument("--no-backup", action="store_true")
+    x = sub.add_parser("prepare-edits", help="create a before/after sector journal from original and modified images")
+    x.add_argument("original")
+    x.add_argument("modified")
+    x.add_argument("journal")
+    for command in ("apply-edits", "recover-edits"):
+        x = sub.add_parser(command, help="authenticated changed-sector write and readback; preserves unrelated card regions")
+        x.add_argument("device")
+        x.add_argument("journal")
+        x.add_argument("--receipt", required=True, help="new recovery receipt path; never overwrite the original journal's .json receipt")
+        x.add_argument("--confirm-device")
+    x = sub.add_parser("simulate-apply-edits", help="regular-file simulated card only")
+    x.add_argument("device_file")
+    x.add_argument("journal")
+    x.add_argument("--receipt", required=True)
+    x.add_argument("--recover", action="store_true")
     return p
 
 
@@ -137,6 +153,22 @@ def execute(a):
         return discover()
     if cmd == "verify-backup":
         return verify_backup(a.backup, progress)
+    if cmd == "prepare-edits":
+        return prepare_changes(a.original, a.modified, a.journal, progress=progress)
+    if cmd in ("apply-edits", "recover-edits"):
+        d = selected_device(a.device)
+        if a.confirm_device is not None:
+            if a.confirm_device != d.path:
+                raise SafetyError("--confirm-device must exactly equal the selected destination.")
+        else:
+            if not sys.stdin.isatty():
+                raise SafetyError("Noninteractive card edits require --confirm-device with the exact destination.")
+            print(f"{cmd}: {d.path} · {d.model} · {d.capacity:,} bytes · {d.serial or d.diskseq}\nJournal: {a.journal}\nNon-atomic in-place update. Recovery covers journaled sectors only, not a complete physical backup.", file=sys.stderr)
+            if input(f"Type {d.path} to write changed sectors and verify: ") != d.path:
+                raise SafetyError("Card edit was not confirmed.")
+        return apply_card_changes(d, a.journal, a.receipt, progress, recovery=cmd == "recover-edits")
+    if cmd == "simulate-apply-edits":
+        return SimulatedDevice(Path(a.device_file)).apply_changes(a.journal, a.receipt, progress, recovery=a.recover)
     if cmd == "backup-card":
         return backup_card(selected_device(a.device), a.output, progress=progress)
     if cmd == "write-card":

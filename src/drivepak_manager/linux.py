@@ -13,6 +13,7 @@ import time
 import zipfile
 
 from .backup import verify_backup
+from . import __version__
 from .devices import validate
 from .errors import Cancelled, SafetyError, DrivePakError
 from .streams import atomic_output, checkpoint, distinct, need_space, report, write_json
@@ -32,20 +33,23 @@ def helper_installed():
     return True
 
 
-def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, *, acknowledge_no_backup=False):
+def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, *, acknowledge_no_backup=False,
+           acknowledge_in_place=False, recovery=False, recovery_manifest_path=None):
     if not helper_installed():
         raise SafetyError("Linux helper is not installed/trusted. Build with tools/build_linux.sh, then install the generated helper using the documented administrator command. The GUI must remain unprivileged.")
-    if operation == "write-direct":
-        if acknowledge_no_backup is not True:
+    if operation in ("write-direct", "write-patch"):
+        if operation == "write-direct" and acknowledge_no_backup is not True:
             raise SafetyError("Direct writing requires explicit acknowledgement that no backup will be created.")
+        if operation == "write-patch" and (acknowledge_in_place is not True or not recovery_manifest_path):
+            raise SafetyError("Card edits require explicit acknowledgement and a new recovery manifest destination.")
         try:
             with zipfile.ZipFile(HELPER.with_name("drivepak-manager-helper.pyz")) as archive:
                 info = archive.getinfo("helper-capabilities.json")
                 capability = json.loads(archive.read(info)) if info.file_size <= 4096 else None
-                if not isinstance(capability, dict) or capability.get("protocol") != 1 or "write-direct" not in capability.get("operations", []):
+                if not isinstance(capability, dict) or capability.get("protocol") != 1 or operation not in capability.get("operations", []):
                     raise ValueError("direct operation unavailable")
         except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile) as e:
-            raise SafetyError("The installed helper needs updating for direct writes. Run the current distribution's install-helper.sh with sudo, then retry. No device was opened.") from e
+            raise SafetyError(f"The installed helper needs updating for this card operation. Run sudo ./install-helper.sh from drivepak-manager-{__version__}-linux, then retry. No device was opened.") from e
     with tempfile.TemporaryDirectory(prefix="dpm-") as directory:
         endpoint = str(Path(directory) / "control")
         with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as listener:
@@ -77,6 +81,8 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, 
                         request["manifest"] = manifest
                     if operation == "write-direct":
                         request["acknowledge_no_backup"] = True
+                    if operation == "write-patch":
+                        request.update(acknowledge_in_place=True, recovery=recovery)
                     connection.sendmsg([json.dumps(request).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))])
                     sent_cancel = False
                     while True:
@@ -93,6 +99,12 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, 
                         event = json.loads(raw)
                         if event["event"] == "progress":
                             report(progress, event["done"], event["total"], event["phase"])
+                        elif event["event"] == "recovery-ready":
+                            if operation != "write-patch" or not recovery_manifest_path:
+                                raise SafetyError("Unexpected recovery checkpoint from helper.")
+                            checkpoint(cancel)
+                            write_json(recovery_manifest_path, event["manifest"])
+                            connection.send(b"recovery-saved")
                         elif event["event"] == "error":
                             raise DrivePakError(event["message"])
                         elif event["event"] == "result":
@@ -139,3 +151,23 @@ def write_card_direct(device, source, progress=None, cancel=None, *, acknowledge
     with open(source, "rb", buffering=0) as src:
         return invoke("write-direct", device.identity, [src.fileno()], progress=progress, cancel=cancel,
                       acknowledge_no_backup=True)
+
+
+def apply_card_changes(device, journal, receipt, progress=None, cancel=None, *, recovery=False):
+    """Apply/recover a durable journal; the helper checks the target before writing."""
+    journal, receipt = Path(journal), Path(receipt)
+    distinct(journal, receipt)
+    if not recovery and receipt.absolute() != Path(str(journal) + ".json").absolute():
+        raise SafetyError("Save the initial recovery receipt beside its journal as JOURNAL.dpp.json; recovery discovers it there.")
+    validate(device.identity, [journal, receipt.parent])
+    if receipt.exists():
+        raise SafetyError("Recovery receipt already exists; choose a new destination.")
+    manifest = None
+    if recovery:
+        saved = Path(str(journal) + ".json")
+        if not saved.is_file() or saved.stat().st_size > 65536:
+            raise SafetyError("Missing or oversized edit recovery receipt.")
+        manifest = json.loads(saved.read_text())
+    with journal.open("rb", buffering=0) as source:
+        return invoke("write-patch", device.identity, [source.fileno()], manifest, progress, cancel,
+                      acknowledge_in_place=True, recovery=recovery, recovery_manifest_path=receipt)

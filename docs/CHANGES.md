@@ -1,5 +1,27 @@
 # Changes
 
+## 1.1.0
+
+* Added **Apply image edits to card** for all existing image mutations. It prepares
+  an immutable local checkpoint and durable before/after sector journal, rejects
+  a card whose image-sized range differs from the editor original, then writes
+  and independently verifies only changed sectors. Unrelated regions are retained.
+* Added **Recover card edits** and CLI preparation/apply/recovery/simulation.
+  The helper waits for a durable recovery receipt before the first write. Partial
+  recovery journals are explicitly distinguished from complete physical backups.
+* Reader/system/backing-device protection, exclusive access, identity checks,
+  bounded sync, cancellation and failure handling remain at the privileged boundary.
+* The desktop shows the startup BASIC bank and the bank/disk commands for the
+  selected disk, addressing confusion between e.g. DOS #125 and T&D #125.
+* Prevented duplicate selection signals from starting another directory read and
+  clearing a just-refreshed file view. Busy GUI controls no longer inspect image
+  metadata while a worker uses it; shared seek/read/write operations are locked.
+  Added concurrent I/O and end-to-end GUI/CLI/helper checks.
+
+This workflow uses local working images; on-demand physical-card browsing is
+not implemented. Development performed no card writes or other destructive
+hardware tests. Update the helper to 1.1.0 to enable changed-sector operations.
+
 ## 1.0.4
 
 * Card writes flush at most 64 MiB per batch and flush the final batch before

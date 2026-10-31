@@ -217,3 +217,14 @@ class SimulatedDevice:
         with self.path.open("r+b", buffering=0) as target, open(source, "rb", buffering=0) as src:
             return direct_write_stream(target, self.capacity, src, progress, cancel, self.guard,
                                        acknowledge_no_backup=acknowledge_no_backup)
+
+    def apply_changes(self, journal, receipt, progress=None, cancel=None, *, recovery=False):
+        from .patches import apply_changes_stream
+        distinct(self.path, journal, receipt)
+        if not recovery and Path(receipt).absolute() != Path(str(journal) + ".json").absolute():
+            raise SafetyError("Save the initial recovery receipt beside its journal as JOURNAL.dpp.json.")
+        manifest = json.loads(Path(str(journal) + ".json").read_text()) if recovery else None
+        with self.path.open("r+b", buffering=0) as target, open(journal, "rb", buffering=0) as source:
+            return apply_changes_stream(target, self.capacity, self.identity, source,
+                lambda m: write_json(receipt, m), progress, cancel, self.guard,
+                acknowledge_in_place=True, recovery=recovery, manifest=manifest)

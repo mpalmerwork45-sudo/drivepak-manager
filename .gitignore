@@ -9,6 +9,9 @@
 /*.dsk
 /*.os9
 /*.bin
+/*.dpp
+/*.dpp.json
+/recovery-*.json
 /logs/
 /.venv/
 /venv/

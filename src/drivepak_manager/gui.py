@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import sys
 import threading
+import tempfile
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QSettings, QStandardPaths, QThread, Signal, Slot
@@ -25,8 +26,9 @@ from .filesystems.decb import DECB
 from .filesystems.os9 import OS9
 from .format import BLOCK, DEFAULTS, SLOT_BYTES
 from .image import RAW_DISK_SIZES, Session, create_blank, read_disk_file
-from .linux import backup_card, write_card, write_card_direct
-from .streams import checkpoint, report, write_json, distinct
+from .linux import backup_card, write_card, write_card_direct, apply_card_changes
+from .patches import prepare_changes
+from .streams import checkpoint, report, write_json, distinct, copy_verified, fingerprint
 
 
 def human(n):
@@ -354,6 +356,8 @@ class MainWindow(QMainWindow):
         self.action("backup", "Back up card / Open card…", self.backup_action, icon=S.SP_DriveHDIcon)
         self.action("verify", "Verify backup…", self.verify_action, icon=S.SP_DialogApplyButton)
         self.action("write", "Write image to card…", self.write_action, icon=S.SP_ArrowForward)
+        self.action("apply", "Apply image edits to card…", self.apply_changes_action, icon=S.SP_DialogApplyButton)
+        self.action("recover_edits", "Recover card edits…", self.recover_edits_action)
         self.action("import_disk", "Import disk(s)…", self.import_disks, icon=S.SP_ArrowDown)
         self.action("export_disk", "Export disk(s)…", self.export_disks, icon=S.SP_ArrowUp)
         self.action("insert", "Insert file…", self.insert_file)
@@ -371,7 +375,7 @@ class MainWindow(QMainWindow):
         self.action("preferences", "Working image folder…", self.choose_work_dir)
         self.action("guide", "Quick start and recovery", self.guide)
         menus = [("&File", ["open", "new", "save", "discard", "review", "diagnostics", "preferences"]),
-                 ("&Card", ["backup", "verify", "write"]),
+                 ("&Card", ["backup", "verify", "write", "apply", "recover_edits"]),
                  ("&Disks", ["import_disk", "export_disk", "export_os9", "import_os9"]),
                  ("&Files", ["insert", "extract", "rename_file", "delete_file"]),
                  ("&Partitions", ["create_part", "rename_part", "delete_part", "default"]),
@@ -523,6 +527,16 @@ class MainWindow(QMainWindow):
 
     def update_actions(self):
         busy = self.worker is not None
+        if busy:
+            # Never seek the shared image for metadata while a worker is reading
+            # or changing it. Controls may emit selection signals during refresh.
+            for action in self.actions.values():
+                action.setEnabled(False)
+            self.search_all.setEnabled(False)
+            self.search.setEnabled(False)
+            self.up.setEnabled(False)
+            self.actions["import_disk"].setToolTip("Wait for the current operation to finish.")
+            return
         loaded = self.session is not None
         layout = self.session.image.layout() if loaded else None
         valid = bool(layout and layout.editable)
@@ -536,7 +550,7 @@ class MainWindow(QMainWindow):
         disk = bool(part and part.kind == 2 and self.current[1] is not None)
         os9 = bool(part and part.kind in (3, 4))
         selected = bool(self.files.selectionModel().selectedRows())
-        always = {"open", "new", "backup", "verify", "write", "preferences", "guide"}
+        always = {"open", "new", "backup", "verify", "write", "recover_edits", "preferences", "guide"}
         edits = {"create_part", "rename_part", "delete_part", "default", "import_disk"}
         for key, action in self.actions.items():
             enabled = key in always or loaded
@@ -550,6 +564,8 @@ class MainWindow(QMainWindow):
                 enabled = disk and known
             if key in ("import_os9", "export_os9"):
                 enabled = os9 and known and (valid or key == "export_os9")
+            if key == "apply":
+                enabled = valid and bool(self.session.changes)
             action.setEnabled(enabled and not busy)
         if busy:
             import_tip = "Wait for the current operation to finish."
@@ -597,6 +613,8 @@ class MainWindow(QMainWindow):
                             chosen = child
             self.identity_label.setText(f"Original: {s.original}\nWorking copy: {s.working}")
             state = f"{len(s.changes)} recorded change(s) · " + (f"Saved image: {s.saved_as}" if s.saved_as else ("Unsaved working changes" if s.changes else "Working copy matches original"))
+            startup = next((p.name for p in layout.partitions if p.start == layout.defaults.get("DOS") and p.kind == 2), "unassigned or unrecognised")
+            state += f"\nStartup Disk BASIC bank: {startup}. Disk numbers belong to the selected bank."
             free = f" · {human(sum(n for _, n in layout.free_regions()) * BLOCK)} free physical space" if layout.editable else " · layout needs inspection"
             self.state_label.setText(f"{layout.name} · {layout.size:,} bytes ({human(layout.size)}){free}\n{state}\n{self.backup_status} · {self.written_status}")
             self.details.setPlainText(json.dumps({"name": layout.name, "table_sector": layout.table, "terminator_sector": layout.terminator,
@@ -610,17 +628,22 @@ class MainWindow(QMainWindow):
             self.identity_label.setText("Open an image, create a blank image, or select a card to back it up and begin editing.")
             self.state_label.setText(f"{self.written_status}\n{self.backup_status}" if self.written_status.startswith("Card write readback verified") else "Card workflow: Select card → verified complete backup → separate working image → edit → review → write → readback verify")
             self.directory_status.setText("Image files and card backups are kept unchanged. All edits use a separate working image.")
-        self.tree.blockSignals(False)
         if chosen:
             self.tree.setCurrentItem(chosen)
             chosen.setSelected(True)
+        self.tree.blockSignals(False)
+        if chosen:
+            self.selection_changed()
         self.update_actions()
 
     def selection_changed(self):
         item = self.tree.currentItem()
         if not self.session or not item or self.worker:
             return
-        self.current = tuple(item.data(0, Qt.ItemDataRole.UserRole))
+        selection = tuple(item.data(0, Qt.ItemDataRole.UserRole))
+        if selection == self.current:
+            return
+        self.current = selection
         self.os9_path = "/"
         self.browse_current()
 
@@ -633,6 +656,8 @@ class MainWindow(QMainWindow):
         part = self.session.image.layout().partition(pidx)
         self.files.setRowCount(0)
         self.breadcrumb.setText(f"{part.name} / " + (f"Disk {disk:03d}" if disk is not None else self.os9_path))
+        if disk is not None:
+            self.breadcrumb.setText(f'{part.name} / Disk {disk:03d} · CoCo: DRIVE# "{part.name}" then DRIVE 0,#{disk}')
         if disk is None and part.kind == 2:
             self.directory_status.setText(f"{part.disks} complete virtual floppy slots. Expand this partition and select a disk.")
             self.update_actions()
@@ -1069,6 +1094,72 @@ class MainWindow(QMainWindow):
     def review_changes(self):
         TextDialog("Review working image", self.review_text(), self).exec()
 
+    def apply_changes_action(self):
+        if self.worker or not self.session or not self.session.changes:
+            return
+        session = self.session
+        device = self.choose_device("Select destination for changed sectors only")
+        if not device:
+            return
+        name = next(tempfile._get_candidate_names())
+        work = self.work_dir
+        baseline = work / f"{name}.card-checkpoint.img"
+        journal = work / f"{name}.card-edits.dpp"
+        def prepare(progress, cancel):
+            from .devices import validate
+            validate(device.identity, [session.original, session.working, work])
+            state = fingerprint(session.image.file)
+            copy_verified(session.working, baseline, progress, cancel)
+            info = prepare_changes(session.original, baseline, journal, session.original_digest, progress, cancel)
+            return info, state
+        def ready(result):
+            info, state = result
+            if not info["sectors"]:
+                TextDialog("No changed sectors", "The working image is byte-for-byte unchanged. No card access is needed.", self).exec()
+                return
+            text = (f"DESTINATION CARD: {device.path}\n{device.model} · {device.serial or device.wwn or device.diskseq}\nActual capacity: {device.capacity:,} bytes\n\n"
+                    f"Editor original: {session.original}\nPrepared image: {baseline}\nChanged physical sectors: {info['sectors']:,} ({info['bytes_changed']:,} bytes)\n\n"
+                    f"Recovery journal: {journal}\nThe journal stores before/after bytes for affected sectors only. It is NOT a complete card backup. Keep any full backup you already have.\n\n"
+                    "The card's entire image-sized range must match the editor original before any edit is written. Only changed sectors will be overwritten and independently read back; other regions and larger-card tails stay intact.\n\n"
+                    "This is a non-atomic in-place update. Interruption can leave partial edits. Recovery uses the journal and its .json receipt.\n\n" + self.review_text())
+            if TextDialog("Final confirmation — apply image edits", text, self, f"Apply {info['sectors']:,} changed sectors to {device.path}").exec() != QDialog.DialogCode.Accepted:
+                return
+            def apply(progress, cancel):
+                if fingerprint(session.image.file) != state:
+                    raise DrivePakError("Working image changed after review. No card edits started; prepare the changes again.")
+                return apply_card_changes(device, journal, str(journal) + ".json", progress, cancel)
+            def applied(receipt):
+                session.original, session.original_digest = baseline, info["modified_sha256"]
+                session.changes, session.saved_as = [], str(baseline)
+                self.written_status = f"Card edits readback verified: {receipt['bytes_written']:,} bytes → {device.path}"
+                self.backup_status = f"Changed-sector recovery journal (not a full backup): {journal}"
+                self.refresh()
+                TextDialog("Card edits verified", json.dumps(receipt, indent=2) + f"\n\nKeep the recovery journal and its manifest:\n{journal}", self).exec()
+            def failed(message):
+                self.fail(f"{message}\n\nPrepared image retained: {baseline}\nEdit journal retained: {journal}\nIf a verified .json recovery receipt exists, Recover card edits can restore the journaled before sectors. A complete backup is needed if sectors no longer match either version.")
+            self.run_task("Applying only changed card sectors", apply, applied, failed)
+        self.run_task("Preparing immutable image checkpoint and edit recovery journal", prepare, ready)
+
+    def recover_edits_action(self):
+        if self.worker:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Select card-edit recovery journal and its .json receipt", str(self.work_dir), "Card edit journal (*.dpp)")
+        if not path:
+            return
+        device = self.choose_device("Select exact card for edit recovery")
+        if not device:
+            return
+        text = (f"RESTORE JOURNALED SECTORS ON: {device.path}\n{device.model} · {device.serial or device.wwn or device.diskseq}\nCapacity: {device.capacity:,} bytes\n\nJournal: {path}\n\n"
+                "Restore the before bytes of all journaled sectors. Other sectors are retained. Every affected sector must still match either its before or after bytes; other contents are rejected before writing. This is not a full-card restoration.\n\nRecovery is non-atomic; keep the journal and complete backups. Written sectors are independently read back.")
+        if TextDialog("Final confirmation — recover card edits", text, self, f"Recover journaled sectors on {device.path}").exec() != QDialog.DialogCode.Accepted:
+            return
+        receipt_path = self.work_dir / f"{next(tempfile._get_candidate_names())}.edit-recovery.json"
+        def done(result):
+            self.written_status = f"Card edit recovery readback verified: {device.path}"
+            self.refresh()
+            TextDialog("Card edit recovery verified", json.dumps(result, indent=2), self).exec()
+        self.run_task("Restoring and verifying journaled card sectors", lambda p, c: apply_card_changes(device, path, receipt_path, p, c, recovery=True), done)
+
     def write_action(self):
         if self.worker:
             return
@@ -1142,7 +1233,7 @@ class MainWindow(QMainWindow):
             self.run_task("Saving diagnostics", lambda p, c: write_json(path, data))
 
     def guide(self):
-        TextDialog("DrivePak Manager quick start", "Open image: selects a raw card image, verifies a separate working copy, then enables editing. Expand a partition and select a numbered disk.\n\nBack up card / Open card: select an external reader, deliberately unmount its volumes if needed, then choose independent backup storage. Every physical byte is copied and independently verified before a working image opens.\n\nImport disk(s): choose raw sector images, review each destination bank/slot and choose how a smaller disk fills the unused logical tail. Export disk(s): select one or several disk rows and choose an explicit size. The original floppy length is not stored.\n\nFiles menu: extract exact bytes plus metadata sidecars; insert, rename and delete files in validated standard Disk BASIC disks. OS-9 supports browsing/extraction and whole-volume import/export. Double-click an OS-9 directory; use Up to return.\n\nPartitions menu: add empty BASIC banks or complete OS-9 volumes; rename/delete entries and assign defaults. Deleting an entry leaves data intact and lets you reassign affected defaults.\n\nSave image as: saves and verifies a new image. Discard changes recreates the working copy from its unchanged original. Working files remain available after closing the app; their paths are shown above.\n\nWrite image to card: choose the source image file to READ, then select the destination SD card to WRITE. A fresh verified backup is enabled by default. Clear the backup checkbox for an explicit direct write without creating a backup; no Save dialog appears in direct mode. Review one final confirmation, authenticate the helper, and wait for independent device readback verification. Bytes beyond a shorter image are preserved.\n\nRecovery after an interrupted write: keep the earlier backup. Open that backup as an image; choose Write image to card. Take a new backup of the selected card's present state, then explicitly confirm restoring the earlier image. Never delete the only recoverable snapshot.\n\nUnsupported layouts still allow complete backup, saved copies and diagnostics. Normal development uses simulated devices; spare-card hardware validation is a separate manual step.", self).exec()
+        TextDialog("DrivePak Manager quick start", "Open image: selects a raw card image, verifies a separate working copy, then enables editing. Expand a partition and select a numbered disk.\n\nBack up card / Open card: select an external reader, deliberately unmount its volumes if needed, then choose independent backup storage. Every physical byte is copied and independently verified before a working image opens.\n\nImport disk(s): choose raw sector images, review each destination bank/slot and choose how a smaller disk fills the unused logical tail. Export disk(s): select one or several disk rows and choose an explicit size. The original floppy length is not stored.\n\nFiles menu: extract exact bytes plus metadata sidecars; insert, rename and delete files in validated standard Disk BASIC disks. OS-9 supports browsing/extraction and whole-volume import/export. Double-click an OS-9 directory; use Up to return.\n\nPartitions menu: add empty BASIC banks or complete OS-9 volumes; rename/delete entries and assign defaults. Deleting an entry leaves data intact and lets you reassign affected defaults.\n\nApply image edits to card (Card menu): prepare an immutable checkpoint and changed-sector recovery journal, select the exact card, review one final confirmation, then compare the full image-sized original range, write only changed sectors and independently read them back. A mismatched card is rejected. Keep the .dpp journal and its .json receipt; Recover card edits restores its before sectors if they still match either before/after bytes. A journal is not a complete card backup. This workflow uses a working image; it does not browse a physical card on demand.\n\nSave image as: saves and verifies a new image. Discard changes recreates the working copy from its unchanged original. Working files remain available after closing the app; their paths are shown above.\n\nWrite image to card: choose the source image file to READ, then select the destination SD card to WRITE. A fresh verified backup is enabled by default. Clear the backup checkbox for an explicit direct write without creating a backup; no Save dialog appears in direct mode. Review one final confirmation, authenticate the helper, and wait for independent device readback verification. Bytes beyond a shorter image are preserved.\n\nRecovery after an interrupted write: keep the earlier backup. Open that backup as an image; choose Write image to card. Take a new backup of the selected card's present state, then explicitly confirm restoring the earlier image. Never delete the only recoverable snapshot.\n\nUnsupported layouts still allow complete backup, saved copies and diagnostics. Normal development uses simulated devices; spare-card hardware validation is a separate manual step.", self).exec()
 
     def closeEvent(self, event):
         if self.worker:

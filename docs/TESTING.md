@@ -6,7 +6,7 @@ enumeration was exercised. The actual PySide6 Widgets interface was launched on
 the X desktop, browsed and visually inspected. The helper was staged under `/tmp`,
 with no system installation or configuration change.
 
-Recorded results (2026-10-31): **110 offline tests passed, 2 reference tests
+Recorded results (2026-10-31): **129 offline tests passed, 2 reference tests
 skipped by default; both opt-in reference integration tests passed**.
 
 ## Reproduce
@@ -66,6 +66,15 @@ is not reproduced perfectly. Privileged access to an actual card and CoCoNet
 firmware compatibility have not been tested. Hardware compatibility and loss
 prevention are not claimed to be proven.
 
+Changed-sector tests independently compare complete simulated card contents
+after disk/file/partition/default edits, including unrelated regions and larger
+tails. They cover malformed/overlapping/truncated/out-of-range journals, a stale
+baseline, failed recovery receipt publication, cancellation, readback mismatch,
+mixed before/after recovery, foreign targets and unknown/torn sector rejection.
+GUI and CLI flows run through preparation, partial application and recovery; the
+real helper SCM_RIGHTS test exercises its durable-receipt handshake with fake
+block open/stat/ioctl adapters. No actual card is opened by these tests.
+
 ## Installation verification
 
 The Linux package was installed offline into a fresh temporary virtualenv using
@@ -104,6 +113,10 @@ versions, reader model/serial, card brand/capacity, USB port and results.
 - [ ] Optional direct-mode test, retaining the initial verified backup elsewhere:
   choose the saved source image, clear the backup checkbox, check the final
   no-backup warning, write the same spare and wait for independent readback.
+- [ ] Optional changed-sector test: open a fresh verified card backup, edit a test
+  file/slot, choose **Apply image edits to card**, check the planned byte count
+  and retain its journal/receipt. Wait for edited-sector readback, test the correct
+  bank on the CoCo, then use **Recover card edits** and verify the before contents.
 - [ ] Return the spare to the computer. Open/verify the **initial** backup, take
   a **new** snapshot of its present contents, and explicitly restore the initial
   image through the normal write/readback workflow.

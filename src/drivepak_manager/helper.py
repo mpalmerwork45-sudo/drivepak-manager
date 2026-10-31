@@ -18,6 +18,7 @@ import sys
 from .backup import snapshot_stream, restore_stream, direct_write_stream
 from .devices import validate
 from .errors import SafetyError
+from .patches import apply_changes_stream
 
 BLKGETSIZE64 = 0x80081272
 BLKFLSBUF = 0x1261
@@ -78,19 +79,22 @@ def serve(sock, uid):
         if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(msg) > 32768:
             raise SafetyError("Oversized helper request.")
         request = json.loads(msg)
-        if set(request) - {"operation", "expected", "manifest", "acknowledge_no_backup"}:
+        if set(request) - {"operation", "expected", "manifest", "acknowledge_no_backup", "acknowledge_in_place", "recovery"}:
             raise SafetyError("Unknown helper request field.")
         op = request["operation"]
-        if op not in ("backup", "write", "write-direct") or len(descriptors) != (1 if op == "write-direct" else 2):
+        if op not in ("backup", "write", "write-direct", "write-patch") or len(descriptors) != (1 if op in ("write-direct", "write-patch") else 2):
             raise SafetyError("Unsupported helper operation or descriptor count.")
         direct = op == "write-direct"
+        patch = op == "write-patch"
         if direct and request.get("acknowledge_no_backup") is not True:
             raise SafetyError("Direct writing requires explicit acknowledgement that no backup is being created.")
+        if patch and request.get("acknowledge_in_place") is not True:
+            raise SafetyError("Applying edits requires explicit acknowledgement of in-place card changes.")
         one = descriptors[0]
         s1 = check_fd(one, uid, writable=op == "backup")
         # Backup readback is the same file, so do not take a second flock which
         # would conflict with its independent exclusive output descriptor.
-        if not direct:
+        if not direct and not patch:
             two = descriptors[1]
             s2 = os.fstat(two)
             if not stat.S_ISREG(s2.st_mode) or fcntl.fcntl(two, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
@@ -132,6 +136,17 @@ def serve(sock, uid):
         with os.fdopen(os.dup(fd), "rb" if op == "backup" else "r+b", buffering=0) as target:
             # Flush/invalidate block cache before the independent device pass.
             target.invalidate = lambda: fcntl.ioctl(fd, BLKFLSBUF)
+            if patch:
+                def recovery_ready(manifest):
+                    send(sock, {"event": "recovery-ready", "manifest": manifest})
+                    if sock.recv(128) != b"recovery-saved":
+                        raise SafetyError("The recovery manifest was not saved durably. No card edits were written.")
+                with os.fdopen(os.dup(one), "rb", buffering=0) as source:
+                    result = apply_changes_stream(target, device.capacity, device.identity, source, recovery_ready,
+                        progress, cancel, guard, acknowledge_in_place=True,
+                        recovery=request.get("recovery", False), manifest=request.get("manifest"))
+                send(sock, {"event": "result", "result": result})
+                return
             if direct:
                 with os.fdopen(os.dup(one), "rb", buffering=0) as source:
                     result = direct_write_stream(target, device.capacity, source, progress, cancel, guard,

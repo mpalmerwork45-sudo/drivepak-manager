@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import threading
 
 from .errors import FormatError, SafetyError
 from .format import (BLOCK, PAYLOAD, SLOT_BYTES, SLOT_SECTORS, MAX_PARTITIONS,
@@ -39,6 +40,7 @@ class Image:
         self.file = self.path.open("r+b" if writable else "rb", buffering=0)
         self.size = self.path.stat().st_size
         self.writable = writable
+        self._io_lock = threading.RLock()
         self._journal = None
         self._records = []
 
@@ -54,22 +56,24 @@ class Image:
     def read(self, offset, count):
         if offset < 0 or count < 0 or offset + count > self.size:
             raise FormatError(f"Read outside image at byte {offset}, length {count}.")
-        self.file.seek(offset)
-        return read_exact(self.file, count)
+        with self._io_lock:
+            self.file.seek(offset)
+            return read_exact(self.file, count)
 
     def write(self, offset, data):
         if not self.writable or self._journal is None:
             raise SafetyError("Writes require a transaction on a separate working image.")
         if offset < 0 or offset + len(data) > self.size:
             raise FormatError("Write outside working image.")
-        original = self.read(offset, len(data))
-        if original == data:
-            return
-        position = self._journal.tell()
-        write_all(self._journal, original)
-        self._records.append((offset, len(data), position))
-        self.file.seek(offset)
-        write_all(self.file, data)
+        with self._io_lock:
+            original = self.read(offset, len(data))
+            if original == data:
+                return
+            position = self._journal.tell()
+            write_all(self._journal, original)
+            self._records.append((offset, len(data), position))
+            self.file.seek(offset)
+            write_all(self.file, data)
 
     @contextmanager
     def transaction(self):
@@ -84,9 +88,10 @@ class Image:
                 os.fsync(self.file.fileno())
             except BaseException:
                 for offset, size, pos in reversed(self._records):
-                    journal.seek(pos)
-                    self.file.seek(offset)
-                    write_all(self.file, read_exact(journal, size))
+                    with self._io_lock:
+                        journal.seek(pos)
+                        self.file.seek(offset)
+                        write_all(self.file, read_exact(journal, size))
                 self.file.flush()
                 os.fsync(self.file.fileno())
                 raise

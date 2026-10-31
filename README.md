@@ -1,6 +1,6 @@
 # DrivePak Manager
 
-**Version 1.0.4 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
+**Version 1.1.0 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
 
 A native Python/PySide6 desktop utility for Roger Taylor's **CoCoNet MicroSD
 Drive Pak** proprietary card layout. Supports working images, Disk BASIC disk
@@ -114,7 +114,7 @@ To enable card access directly from a source installation:
 
 ```bash
 ./tools/build_linux.sh
-sudo ./dist/drivepak-manager-1.0.4-linux/install-helper.sh
+sudo ./dist/drivepak-manager-1.1.0-linux/install-helper.sh
 ```
 
 The helper is installed once, then updated when a release requires it. Device
@@ -125,8 +125,8 @@ To produce the Linux distribution, desktop launcher and helper:
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.0.4-linux.tar.gz -C /tmp
-/tmp/drivepak-manager-1.0.4-linux/install-user.sh
+tar -xzf dist/drivepak-manager-1.1.0-linux.tar.gz -C /tmp
+/tmp/drivepak-manager-1.1.0-linux/install-user.sh
 ```
 
 The user installer creates a private virtualenv, an Applications menu entry and
@@ -139,7 +139,7 @@ offline wheelhouse installation and uninstall commands.
 this administrator installation yourself:
 
 ```bash
-sudo /tmp/drivepak-manager-1.0.4-linux/install-helper.sh
+sudo /tmp/drivepak-manager-1.1.0-linux/install-helper.sh
 ```
 
 This installs only the constrained helper and its authentication policy. It does
@@ -170,6 +170,12 @@ for several card-sized files.
 
 ## Write an existing image directly to an SD card
 
+For updates to an existing card, **Card → Apply image edits to card** writes only
+the sectors changed by your working-image edits, including disk/file and partition
+changes. It checks the full original image-sized card range first, keeps a partial
+recovery journal, and independently reads back changed sectors. It still uses
+local working images. See [changed-sector updates and recovery](docs/CARD_EDITS.md).
+
 1. Choose **Write image to card**, even with no image open in the editor.
 2. Under **Image file to read from**, choose your existing `NEWIMAGE.img`.
    This file is opened read-only; the app will write its bytes to the card.
@@ -189,7 +195,7 @@ card operation has finished.
 
 **Copying 100% with an older helper:** Linux may still be flushing queued data
 to the card. Keep it connected until **Card write verified** appears. Version
-1.0.4 adds explicit flushing/readback stages and syncs writes in 64 MiB batches
+1.0.4 added explicit flushing/readback stages and synced writes in 64 MiB batches
 to prevent a whole card image queuing in RAM. Slow readers/cards can take tens of
 minutes, followed by readback verification. Update the helper only after the
 current operation has finished.
@@ -198,6 +204,18 @@ current operation has finished.
 [Format and limitations](docs/FORMAT.md) · [Testing and spare-card checklist](docs/TESTING.md)
 
 ## Import a disk into T&D
+
+Each bank has its own disk numbers. If a game appears in **T&D / Disk 125** in
+the app but the CoCo shows a blank disk 125, select the bank first:
+
+```basic
+DRIVE# "T&D"
+DRIVE 0,#125
+DIR
+```
+
+`DOS / Disk 125` is a different disk. The startup bank is shown in the desktop
+status banner, and selecting a disk shows its CoCo bank/disk commands.
 
 1. Put the raw `.dsk` file on Linux. Extract it first if it arrived in a ZIP.
 2. Open the card's verified working image, or use **Open image** on an existing
@@ -353,7 +371,7 @@ hashed; [provenance.json](docs/provenance.json) records actual sizes and SHA-256
 Those hashes establish reproducibility, not independent publisher authentication.
 The 2 GB-labelled reference contains **1,866,210,304** image bytes.
 
-Recorded 1.0.4 validation: **110 offline tests passed and 2 reference integration
+Recorded 1.1.0 validation: **129 offline tests passed and 2 reference integration
 tests passed**, with desktop startup and read-only selector inspection. This
 includes a synthetic T&D slot-31 import that preserves defaults, padding and
 unrelated data. Automated results are not physical-hardware proof; complete

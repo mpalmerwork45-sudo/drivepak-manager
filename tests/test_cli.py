@@ -38,3 +38,17 @@ def test_cli_explicit_direct_write_to_simulated_device(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "verified" and result["backup_policy"] == "none-explicit-direct-write"
     assert target.read_bytes() == source.read_bytes() + b"\x27" * 3584
+
+
+def test_cli_image_edit_journal_apply_and_recovery(tmp_path, capsys):
+    original, modified, target, journal = [tmp_path / n for n in ("original.img", "modified.img", "card.bin", "edits.dpp")]
+    original.write_bytes(b"\x81" * 4096)
+    b = bytearray(original.read_bytes())
+    b[1025] = 0x12
+    modified.write_bytes(b)
+    target.write_bytes(original.read_bytes())
+    assert main(["prepare-edits", str(original), str(modified), str(journal)]) == 0
+    assert main(["simulate-apply-edits", str(target), str(journal), "--receipt", str(journal) + ".json"]) == 0
+    assert target.read_bytes() == modified.read_bytes()
+    assert main(["simulate-apply-edits", str(target), str(journal), "--receipt", str(tmp_path / "recovered.json"), "--recover"]) == 0
+    assert target.read_bytes() == original.read_bytes()

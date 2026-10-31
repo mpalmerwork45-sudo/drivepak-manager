@@ -135,6 +135,25 @@ def test_gui_progress_handles_larger_than_four_gigabytes(qtbot):
     window.close()
 
 
+def test_busy_gui_does_not_read_worker_image_metadata(qtbot, card, tmp_path, monkeypatch):
+    import threading
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.session = Session.open(card, tmp_path / "work")
+    release = threading.Event()
+    layout = window.session.image.layout
+    monkeypatch.setattr(window.session.image, "layout", lambda: pytest.fail("Busy GUI accessed shared worker image"))
+    try:
+        window.run_task("Waiting", lambda p, c: release.wait(5))
+        window.update_actions()
+        assert window.worker and not window.actions["import_disk"].isEnabled()
+    finally:
+        monkeypatch.setattr(window.session.image, "layout", layout)
+        release.set()
+        settle(qtbot, window)
+    window.close()
+
+
 def test_flushing_card_is_indeterminate_and_cancel_waits_for_io(qtbot, tmp_path, monkeypatch):
     import os
     import threading
@@ -229,6 +248,7 @@ def test_import_tandd_slot_31_with_os9_default_in_a_floppy_bank(qtbot, legacy_mi
     window.tree.setCurrentItem(bank.child(31))
     settle(qtbot, window)
     assert window.current == (1, 31) and window.actions["import_disk"].isEnabled()
+    assert 'DRIVE# "T&D" then DRIVE 0,#31' in window.breadcrumb.text()
     assert not window.layout_notice.isHidden() and "Default U3" in window.layout_notice.text()
     source = tmp_path / "game.dsk"
     payload = bytearray(blank_disk()[:161280])
@@ -296,7 +316,7 @@ def test_gui_file_partition_and_os9_workflows(qtbot, tmp_path, os9_volume, monke
     settle(qtbot, window)
     # The mutation refresh chains a separate directory-read worker. Wait for
     # its rendered outcome, rather than assuming the first idle signal is final.
-    qtbot.waitUntil(lambda: window.files.item(0, 0) is not None and window.files.item(0, 0).text() == "RENAMED.BIN", timeout=15000)
+    qtbot.waitUntil(lambda: bool(errors) or (window.files.item(0, 0) is not None and window.files.item(0, 0).text() == "RENAMED.BIN"), timeout=15000)
     assert not errors
     window.files.selectRow(0)
     extract_dir = tmp_path / "extract"
@@ -427,4 +447,51 @@ def test_direct_file_to_card_has_no_save_dialog_and_keeps_source(qtbot, tmp_path
     assert source.read_bytes() == b"\x47" * 512
     assert "readback verified" in window.state_label.text()
     assert not list(tmp_path.glob("*.json"))
+    window.close()
+
+
+def test_gui_applies_and_recovers_image_edits_without_full_card_write(qtbot, card, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from drivepak_manager import gui, devices
+    from drivepak_manager.backup import SimulatedDevice
+    from drivepak_manager.filesystems.decb import DECB
+    from drivepak_manager.image import Image
+    sim = SimulatedDevice(card)
+    before = card.read_bytes()
+    original = tmp_path / "source-image.img"
+    original.write_bytes(before)
+    device = SimpleNamespace(identity=sim.identity, path="/dev/SIMULATED", model="Simulated reader", capacity=sim.capacity, serial="TEST", wwn="", diskseq="1")
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    window.session = Session.open(original, tmp_path / "work")
+    window.refresh()
+    source = tmp_path / "GAME.BIN"
+    source.write_bytes(b"\x04\xff\x00\x0d" * 100)
+    DECB(window.session.image.volume(1, 0, editing=True)).insert(source)
+    window.edited("Inserted GAME.BIN")
+    monkeypatch.setattr(window, "choose_device", lambda title: device)
+    monkeypatch.setattr(devices, "validate", lambda *a, **kw: device)
+    monkeypatch.setattr(gui.TextDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    journal_paths = []
+    def write(d, journal, receipt, progress, cancel, **kw):
+        journal_paths.append(journal)
+        return sim.apply_changes(journal, receipt, progress, cancel, **kw)
+    monkeypatch.setattr(gui, "apply_card_changes", write)
+    monkeypatch.setattr(gui, "write_card", lambda *a, **kw: pytest.fail("Edits attempted a full-card write"))
+    errors = []
+    monkeypatch.setattr(window, "fail", errors.append)
+    window.actions["apply"].trigger()
+    qtbot.waitUntil(lambda: bool(errors) or window.written_status.startswith("Card edits readback verified"), timeout=15000)
+    settle(qtbot, window)
+    assert not errors and not window.session.changes
+    assert window.session.original != card and window.session.original.read_bytes() == card.read_bytes()
+    with Image(card) as image:
+        assert DECB(image.volume(1, 0)).files[0].name == "GAME.BIN"
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **kw: (str(journal_paths[0]), ""))
+    window.actions["recover_edits"].trigger()
+    settle(qtbot, window)
+    assert not errors and card.read_bytes() == before
+    assert original.read_bytes() == before
+    assert "recovery readback verified" in window.written_status
     window.close()
