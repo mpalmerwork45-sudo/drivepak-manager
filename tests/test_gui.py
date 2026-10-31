@@ -14,6 +14,7 @@ def settle(qtbot, window):
 def test_open_save_browse_import_export_and_no_freeze(qtbot, card, tmp_path, monkeypatch):
     window = MainWindow()
     qtbot.addWidget(window)
+    assert str(tmp_path / "preferences") in window.settings.fileName()
     window.settings.setValue("work_dir", str(tmp_path / "work"))
     errors = []
     monkeypatch.setattr(window, "fail", errors.append)

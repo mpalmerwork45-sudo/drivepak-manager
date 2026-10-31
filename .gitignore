@@ -3,6 +3,12 @@
 /data/work/
 /backups/
 /exports/
+# Protect images saved by native dialogs in the repository root. Deliberate
+# fixtures in tests/ remain trackable.
+/*.img
+/*.dsk
+/*.os9
+/*.bin
 /logs/
 /.venv/
 /venv/

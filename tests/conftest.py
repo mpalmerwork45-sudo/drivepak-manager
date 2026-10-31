@@ -10,13 +10,11 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolated_preferences(tmp_path):
+def isolated_preferences(tmp_path, monkeypatch):
     from PySide6.QtCore import QSettings
-    previous = QSettings.defaultFormat()
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "preferences"))
-    yield
-    QSettings.setDefaultFormat(previous)
+    import drivepak_manager.gui as gui
+    settings = tmp_path / "preferences/drivepak.ini"
+    monkeypatch.setattr(gui, "QSettings", lambda *args: QSettings(str(settings), QSettings.Format.IniFormat))
 
 
 def put24(b, offset, n):

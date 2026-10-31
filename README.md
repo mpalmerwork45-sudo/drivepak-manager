@@ -77,13 +77,13 @@ An image edit always names a separate output, and existing outputs are protected
 
 ```bash
 .venv/bin/drivepak --help
-.venv/bin/drivepak new blank.img --capacity-mib 64 --disks 16
-.venv/bin/drivepak inspect blank.img
-.venv/bin/drivepak disk-export blank.img slot.dsk --partition 0 --disk 0 --size 737280
-.venv/bin/drivepak disk-import blank.img edited.img --map '0:3:game.dsk' --tail zero
-.venv/bin/drivepak insert edited.img with-file.img GAME.BIN --partition 0 --disk 3 --type 2
-.venv/bin/drivepak files with-file.img --partition 0 --disk 3
-.venv/bin/drivepak extract with-file.img GAME.BIN extracted.bin --partition 0 --disk 3
+.venv/bin/drivepak new data/work/blank.img --capacity-mib 64 --disks 16
+.venv/bin/drivepak inspect data/work/blank.img
+.venv/bin/drivepak disk-export data/work/blank.img exports/slot.dsk --partition 0 --disk 0 --size 737280
+.venv/bin/drivepak disk-import data/work/blank.img data/work/edited.img --map '0:3:/path/to/game.dsk' --tail zero
+.venv/bin/drivepak insert data/work/edited.img data/work/with-file.img /path/to/GAME.BIN --partition 0 --disk 3 --type 2
+.venv/bin/drivepak files data/work/with-file.img --partition 0 --disk 3
+.venv/bin/drivepak extract data/work/with-file.img GAME.BIN exports/extracted.bin --partition 0 --disk 3
 ```
 
 Full-slot exports are 737,280 logical bytes. Smaller explicit export sizes are
