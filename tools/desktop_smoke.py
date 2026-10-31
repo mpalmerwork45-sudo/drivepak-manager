@@ -5,17 +5,31 @@ import os
 from pathlib import Path
 import sys
 import time
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 args = argparse.ArgumentParser(description=__doc__)
 args.add_argument("--offscreen", action="store_true")
 args.add_argument("--keep-open", action="store_true")
+args.add_argument("--installed-launcher", help="also check startup of this installed desktop entrypoint")
 options = args.parse_args()
 if options.offscreen:
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
 os.environ["XDG_CONFIG_HOME"] = str(ROOT / "data/work/smoke-config")
 os.environ["XDG_DATA_HOME"] = str(ROOT / "data/work/smoke-data")
+if options.installed_launcher:
+    process = subprocess.Popen([options.installed_launcher], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        time.sleep(2)
+        if process.poll() is not None:
+            raise SystemExit("Installed GUI failed: " + process.stderr.read().decode(errors="replace"))
+        print("Installed desktop entrypoint started successfully:", options.installed_launcher, flush=True)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=5)
+        process.stderr.close()
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication

@@ -166,6 +166,8 @@ declares **73728**. Browsing it is disabled with those exact counts. An explicit
 warned export retains only the stored partition extent and is labelled a
 diagnostic partition payload, not a claimed complete healthy volume. The app
 does not extend it into the following partition or repair it automatically.
+CLI `volume-export` requires `--diagnostic` to export such an invalid stored
+extent and marks the JSON result accordingly.
 
 ## Partition mutation and newly created images
 

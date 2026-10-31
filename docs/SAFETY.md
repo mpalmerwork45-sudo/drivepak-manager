@@ -62,6 +62,8 @@ ambiguous hardware rather than trusting a `/dev/sdX` name or removable bit alone
 The protection graph joins whole disks, partitions and sysfs holders/slaves,
 including device mapper/crypt/LVM relationships. Root, boot, home and swap backing
 devices are rejected, as are holders, mounted devices and read-only devices.
+Existing raw block-device opens by other processes are checked as well; the
+privileged endpoint requires process descriptor inspection to succeed.
 Backup, working and source filesystem backing is checked through actual open
 descriptors as well as paths. Unknown local backing fails closed. Parent/sibling
 relationships are conservatively protected; an apparently separate partition on

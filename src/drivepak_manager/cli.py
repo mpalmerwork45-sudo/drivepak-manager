@@ -96,6 +96,7 @@ def parser():
     x.add_argument("drive", choices=("DOS", "DD", "U0", "U1", "U2", "U3"))
     x = image_args("volume-export")
     x.add_argument("output")
+    x.add_argument("--diagnostic", action="store_true", help="explicitly export only the stored extent of an invalid OS-9 volume")
     x = image_args("volume-import", edit=True)
     x.add_argument("source")
     sub.add_parser("devices", help="read-only Linux device enumeration and protection reasons")
@@ -205,7 +206,16 @@ def execute(a):
             p = image.layout().partition(a.partition)
             if p.kind not in (3, 4):
                 raise FormatError("Select an OS-9 partition for whole-volume export.")
+            warning = None
+            try:
+                OS9(image.volume(a.partition))
+            except FormatError as e:
+                if not a.diagnostic:
+                    raise FormatError(f"{e} Use --diagnostic to explicitly export only the stored partition extent.") from e
+                warning = str(e)
             image.volume(a.partition).export(a.output, progress=progress)
+            return {"status": "complete", "output": a.output, "diagnostic_partition_only": warning is not None,
+                    "representation": "raw 256-byte payload sectors", "warning": warning}
         elif cmd == "volume-import":
             image.import_os9(a.partition, a.source, progress)
         return {"status": "complete", "output": a.output}

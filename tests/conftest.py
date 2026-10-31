@@ -9,6 +9,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_preferences(tmp_path):
+    from PySide6.QtCore import QSettings
+    previous = QSettings.defaultFormat()
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "preferences"))
+    yield
+    QSettings.setDefaultFormat(previous)
+
+
 def put24(b, offset, n):
     b[offset:offset + 3] = bytes([(n >> 16) & 255, (n >> 8) & 255, n & 255])
 
