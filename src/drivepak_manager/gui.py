@@ -8,7 +8,7 @@ import sys
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSettings, QStandardPaths, QThread, Signal
+from PySide6.QtCore import Qt, QSettings, QStandardPaths, QThread, Signal, Slot
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDockWidget, QFileDialog, QFormLayout, QHBoxLayout,
@@ -39,19 +39,17 @@ def safe_name(name):
 
 class Worker(QThread):
     progress = Signal(object, object, str)
-    succeeded = Signal(object)
-    failed = Signal(str)
 
     def __init__(self, fn, parent=None):
         super().__init__(parent)
         self.fn, self.cancel = fn, threading.Event()
+        self.result, self.error = None, None
 
     def run(self):
         try:
-            result = self.fn(lambda d, t, p: self.progress.emit(d, t, p), self.cancel)
-            self.succeeded.emit(result)
+            self.result = self.fn(lambda d, t, p: self.progress.emit(d, t, p), self.cancel)
         except Exception as e:
-            self.failed.emit(str(e) or type(e).__name__)
+            self.error = str(e) or type(e).__name__
 
 
 class TextDialog(QDialog):
@@ -122,22 +120,22 @@ class DeviceDialog(QDialog):
         self.refresh_button.setEnabled(False)
         worker = Worker(operation, self)
         self.worker = worker
-        result = {}
-        worker.succeeded.connect(lambda devices: result.update(devices=devices))
-        worker.failed.connect(lambda error: result.update(error=error))
+        worker.finished.connect(self._inspection_finished, Qt.ConnectionType.QueuedConnection)
+        worker.start()
 
-        def finish():
-            self.worker = None
-            self.refresh_button.setEnabled(True)
-            if worker.cancel.is_set():
-                QDialog.reject(self)
-                worker.deleteLater()
-                return
-            if "error" in result:
-                self.reason.setText(result["error"])
-                worker.deleteLater()
-                return
-            self.devices = result["devices"]
+    @Slot()
+    def _inspection_finished(self):
+        worker = self.sender()
+        if worker is not self.worker:
+            return
+        self.worker = None
+        self.refresh_button.setEnabled(True)
+        if worker.cancel.is_set():
+            QDialog.reject(self)
+        elif worker.error is not None:
+            self.reason.setText(worker.error)
+        else:
+            self.devices = worker.result
             self.table.setRowCount(len(self.devices))
             self.table.clearSelection()
             self.table.setCurrentCell(-1, -1)
@@ -148,9 +146,7 @@ class DeviceDialog(QDialog):
                     item.setToolTip(value)
                     self.table.setItem(row, col, item)
             self.update_selection()
-            worker.deleteLater()
-        worker.finished.connect(finish)
-        worker.start()
+        worker.deleteLater()
 
     def reject(self):
         if self.worker:
@@ -475,6 +471,7 @@ class MainWindow(QMainWindow):
             return
         self.worker = Worker(fn, self)
         worker = self.worker
+        worker.on_done, worker.on_failed = done, failed
         self.progress.setRange(0, 0)
         self.progress.show()
         self.cancel_button.setEnabled(True)
@@ -484,35 +481,39 @@ class MainWindow(QMainWindow):
         self.tree.setEnabled(False)
         self.files.setEnabled(False)
 
-        def progress(d, t, phase):
-            self.progress.setRange(0, 1000 if t else 0)
-            if t:
-                self.progress.setValue(int(d * 1000 / t))
-            self.statusBar().showMessage(f"{phase} — {d:,} / {t:,} bytes or items")
-
-        outcome = {}
-        worker.progress.connect(progress)
-        worker.succeeded.connect(lambda result: outcome.update(result=result))
-        worker.failed.connect(lambda error: outcome.update(error=error))
-
-        def finish():
-            self.worker = None
-            self.progress.hide()
-            self.cancel_button.hide()
-            self.tree.setEnabled(True)
-            self.files.setEnabled(True)
-            self.update_actions()
-            self.statusBar().showMessage("Ready")
-            if "error" in outcome:
-                (failed or self.fail)(outcome["error"])
-            elif done:
-                try:
-                    done(outcome.get("result"))
-                except Exception as e:
-                    self.fail(str(e))
-            worker.deleteLater()
-        worker.finished.connect(finish)
+        worker.progress.connect(self._task_progress, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._task_finished, Qt.ConnectionType.QueuedConnection)
         worker.start()
+
+    @Slot(object, object, str)
+    def _task_progress(self, done, total, phase):
+        if self.sender() is not self.worker:
+            return
+        self.progress.setRange(0, 1000 if total else 0)
+        if total:
+            self.progress.setValue(int(done * 1000 / total))
+        self.statusBar().showMessage(f"{phase} — {done:,} / {total:,} bytes or items" if total else phase)
+
+    @Slot()
+    def _task_finished(self):
+        worker = self.sender()
+        if worker is not self.worker:
+            return
+        self.worker = None
+        self.progress.hide()
+        self.cancel_button.hide()
+        self.tree.setEnabled(True)
+        self.files.setEnabled(True)
+        self.update_actions()
+        self.statusBar().showMessage("Ready")
+        if worker.error is not None:
+            (worker.on_failed or self.fail)(worker.error)
+        elif worker.on_done:
+            try:
+                worker.on_done(worker.result)
+            except Exception as e:
+                self.fail(str(e))
+        worker.deleteLater()
 
     def cancel_operation(self):
         if self.worker:

@@ -135,6 +135,83 @@ def test_gui_progress_handles_larger_than_four_gigabytes(qtbot):
     window.close()
 
 
+def test_flushing_card_is_indeterminate_and_cancel_waits_for_io(qtbot, tmp_path, monkeypatch):
+    import os
+    import threading
+    from drivepak_manager.backup import SimulatedDevice
+    target, source = tmp_path / "simulated-card.bin", tmp_path / "source.img"
+    target.write_bytes(b"\x38" * 4096)
+    source.write_bytes(b"\x79" * 512)
+    sim = SimulatedDevice(target)
+    key = (target.stat().st_dev, target.stat().st_ino)
+    entered, release = threading.Event(), threading.Event()
+    real_sync = os.fsync
+    def slow_sync(fd):
+        s = os.fstat(fd)
+        if (s.st_dev, s.st_ino) == key and not entered.is_set():
+            entered.set()
+            if not release.wait(10):
+                raise OSError("Simulated flush not released by test")
+        return real_sync(fd)
+    monkeypatch.setattr(os, "fsync", slow_sync)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.show()
+    errors, results, beats = [], [], []
+    timer = QTimer()
+    timer.timeout.connect(lambda: beats.append(1))
+    timer.start(5)
+    try:
+        window.run_task("Writing simulated card", lambda p, c: sim.write_direct(source, p, c, acknowledge_no_backup=True), results.append, errors.append)
+        qtbot.waitUntil(lambda: entered.is_set() and window.progress.maximum() == 0 and "Flushing card" in window.statusBar().currentMessage())
+        assert window.worker and not window.actions["write"].isEnabled()
+        qtbot.waitUntil(lambda: len(beats) >= 3)
+        window.cancel_operation()
+        assert window.worker and not window.cancel_button.isEnabled()
+    finally:
+        release.set()
+        settle(qtbot, window)
+        timer.stop()
+    assert not results and len(errors) == 1
+    assert "PHYSICAL WRITE INCOMPLETE OR UNVERIFIED" in errors[0]
+    assert source.read_bytes() == b"\x79" * 512
+    assert target.read_bytes()[512:] == b"\x38" * 3584
+    window.close()
+
+
+def test_fast_chained_tasks_deliver_results_and_progress_on_gui_thread(qtbot, monkeypatch):
+    import threading
+    window = MainWindow()
+    qtbot.addWidget(window)
+    gui_thread = threading.get_ident()
+    results, errors, progress_threads, worker_threads = [], [], [], []
+    show_message = window.statusBar().showMessage
+    def record_message(*args):
+        progress_threads.append(threading.get_ident())
+        return show_message(*args)
+    monkeypatch.setattr(window.statusBar(), "showMessage", record_message)
+    monkeypatch.setattr(window, "fail", errors.append)
+    def start(number):
+        def work(progress, cancel):
+            worker_threads.append(threading.get_ident())
+            progress(1, 1, "Fast task")
+            return number
+        def complete(result):
+            assert threading.get_ident() == gui_thread
+            assert result == number
+            results.append(result)
+            if number < 19:
+                start(number + 1)
+        window.run_task("Chained task", work, complete)
+    start(0)
+    qtbot.waitUntil(lambda: len(results) == 20 or bool(errors))
+    settle(qtbot, window)
+    assert not errors and results == list(range(20))
+    assert progress_threads and set(progress_threads) == {gui_thread}
+    assert all(thread != gui_thread for thread in worker_threads)
+    window.close()
+
+
 def test_import_tandd_slot_31_with_os9_default_in_a_floppy_bank(qtbot, legacy_mixed_card, tmp_path, monkeypatch):
     from drivepak_manager.filesystems.decb import blank_disk
     from drivepak_manager.streams import hash_file

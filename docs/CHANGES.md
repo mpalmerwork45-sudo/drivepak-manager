@@ -1,5 +1,24 @@
 # Changes
 
+## 1.0.4
+
+* Card writes flush at most 64 MiB per batch and flush the final batch before
+  reporting writing at 100%. This prevents queuing an entire image in Linux RAM
+  while a slow reader still has gigabytes left to write.
+* Explicit indeterminate **Flushing card** and **Preparing independent card
+  readback** stages replace the misleading Copying 100% pause. Verification
+  reports its phase before the first read. Backup/image saves also name flushing.
+* Cancellation waits for an outstanding kernel flush to return; a cancelled or
+  failed write remains incomplete/unverified. Flush errors never report success.
+* GUI progress and completion use queued QObject slots on the desktop thread,
+  with results available before completion. This fixes intermittent refresh
+  races when a completed edit immediately starts another directory-read task.
+* Added bounded-batch byte comparisons, injected flush errors in both write
+  modes, a blocked-flush GUI heartbeat/cancellation test and fast chained tasks.
+
+The running 1.0.3 helper must finish before installing this update. Development
+used simulated devices only; no attached card was written or interrupted.
+
 ## 1.0.3
 
 * Added an explicit image-file-to-card workflow, available without opening an

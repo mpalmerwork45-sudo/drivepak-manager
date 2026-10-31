@@ -51,6 +51,7 @@ def fingerprint(f):
 
 
 def hash_stream(f, length, progress=None, cancel=None, phase="Verifying", guard=None):
+    report(progress, 0, length, phase)
     f.seek(0)
     h = hashlib.sha256()
     for offset in range(0, length, CHUNK):
@@ -158,6 +159,7 @@ def copy_verified(source, destination, progress=None, cancel=None):
     with source.open("rb", buffering=0) as src, atomic_output(destination) as dest:
         initial = fingerprint(src)
         h = copy_stream(src, dest, initial[2], progress, cancel)
+        report(progress, 0, 0, "Flushing saved image to storage")
         dest.flush()
         os.fsync(dest.fileno())
         # Reopen separately: verification must exercise the saved destination.
@@ -169,7 +171,7 @@ def copy_verified(source, destination, progress=None, cancel=None):
     return h
 
 
-def copy_stream(source, destination, length, progress=None, cancel=None, guard=None):
+def copy_stream(source, destination, length, progress=None, cancel=None, guard=None, *, phase="Copying", after_chunk=None):
     source.seek(0)
     destination.seek(0)
     h = hashlib.sha256()
@@ -180,7 +182,10 @@ def copy_stream(source, destination, length, progress=None, cancel=None, guard=N
         b = read_exact(source, min(CHUNK, length - offset))
         write_all(destination, b)
         h.update(b)
-        report(progress, min(offset + len(b), length), length, "Copying")
+        done = offset + len(b)
+        if after_chunk:
+            after_chunk(done)
+        report(progress, done, length, phase)
     return h.hexdigest()
 
 

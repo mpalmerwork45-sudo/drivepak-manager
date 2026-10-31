@@ -111,8 +111,20 @@ CARD**, the backup or no-backup warning, written range and retained tail. Confir
 and authenticate. Both modes require independent card readback before reporting
 success. Never assume a successful image save means a card has been written.
 
+**Writing card**, **Flushing card** and **Reading back written card range** are
+separate stages. A percentage applies only to its current stage. Flushing uses
+an animated indicator because Linux does not provide a reliable percentage for
+that call. Leave the card connected until **Card write verified**. Slow cards
+can take tens of minutes; readback requires a further pass over the written data.
+Version 1.0.4 flushes batches of up to 64 MiB so the kernel cannot queue the whole
+image before writing reaches 100%. With an older helper, **Copying 100%** may
+remain visible while gigabytes of queued writes finish, before readback begins.
+
 Progress and cancellation are available for copies, transfers, search and card
 operations. Cancelling an image edit rolls it back. Cancelling a physical write
 can leave incomplete contents: keep the backup and follow the complete recovery
 steps in SAFETY.md. To restore an older snapshot, open it as an image, then use
 the normal write workflow with a new snapshot of the card's present contents.
+Cancellation cannot interrupt a kernel flush already in progress; the app stays
+responsive and waits for that I/O to return. Do not unplug the card or force-close
+the app while waiting for the cancellation result.

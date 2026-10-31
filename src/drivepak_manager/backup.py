@@ -9,6 +9,8 @@ from .errors import DrivePakError, SafetyError
 from .streams import (atomic_output, checkpoint, copy_stream, distinct, fingerprint,
                       hash_stream, need_space, report, utcnow, write_json)
 
+WRITE_SYNC_BYTES = 64 * 1024**2
+
 
 def require_capacity(capacity):
     if not isinstance(capacity, int) or capacity < 512 or capacity % 512:
@@ -21,6 +23,7 @@ def snapshot_stream(target, capacity, identity, output, readback, progress=None,
     if guard:
         guard()
     digest = copy_stream(target, output, capacity, progress, cancel, guard)
+    report(progress, 0, 0, "Flushing saved backup to storage")
     output.flush()
     os.fsync(output.fileno())
     if os.fstat(readback.fileno()).st_size != capacity:
@@ -31,6 +34,7 @@ def snapshot_stream(target, capacity, identity, output, readback, progress=None,
     # A second complete device pass establishes snapshot correspondence and catches
     # changes while reading. Never assume one read is a stable source stream.
     if hasattr(target, "invalidate"):
+        report(progress, 0, 0, "Preparing second full-card read — keep card connected")
         target.invalidate()
     current = hash_stream(target, capacity, progress, cancel, "Checking source stability", guard)
     if current != digest:
@@ -86,6 +90,7 @@ def restore_stream(target, capacity, identity, source, backup, manifest, progres
     if guard:
         guard()
     if hasattr(target, "invalidate"):
+        report(progress, 0, 0, "Preparing current-card backup comparison")
         target.invalidate()
     if hash_stream(target, capacity, progress, cancel, "Checking backup against current target", guard) != manifest.get("sha256"):
         raise SafetyError("Target no longer matches the backup. Create and verify a fresh complete backup before writing.")
@@ -116,14 +121,29 @@ def _write_verified(target, capacity, source, sf, source_digest, progress, cance
     if guard:
         guard()
     started = False
+    synced = 0
+
+    def sync_batch(done):
+        nonlocal synced
+        # Bound dirty writeback instead of queuing a whole card in Linux RAM.
+        # The final partial batch is flushed before reporting writing at 100%.
+        if done - synced >= WRITE_SYNC_BYTES or done == sf[2]:
+            report(progress, 0, 0, "Flushing card — keep card connected; verification follows")
+            target.flush()
+            os.fsync(target.fileno())
+            synced = done
+            checkpoint(cancel)
+            if guard:
+                guard()
+
     try:
         # Setting this before copy is conservative: cancellation or a first-write
         # failure can still leave device/controller state uncertain.
         started = True
-        copied = copy_stream(source, target, sf[2], progress, cancel, guard)
-        target.flush()
-        os.fsync(target.fileno())
+        copied = copy_stream(source, target, sf[2], progress, cancel, guard,
+                             phase="Writing card", after_chunk=sync_batch)
         if hasattr(target, "invalidate"):
+            report(progress, 0, 0, "Preparing independent card readback — keep card connected")
             target.invalidate()
         if copied != source_digest or fingerprint(source) != sf or (backup is not None and fingerprint(backup) != bf):
             raise SafetyError("Source image or recovery backup changed during the physical write.")

@@ -1,6 +1,7 @@
 import errno
 import io
 import json
+import os
 from pathlib import Path
 import threading
 
@@ -178,7 +179,7 @@ def test_cancellation_after_write_reports_nonatomic(device, tmp_path):
     source.write_bytes(bytes(device.capacity))
     event = threading.Event()
     def progress(done, total, phase):
-        if phase == "Copying":
+        if phase == "Writing card":
             event.set()
     with pytest.raises(DrivePakError, match="PHYSICAL WRITE INCOMPLETE"):
         device.write(source, backup, progress, event)
@@ -302,7 +303,7 @@ def test_direct_write_cancel_and_readback_failure_are_never_success(device, tmp_
     source.write_bytes(b"\x71" * 512)
     event = threading.Event()
     def cancel_after_copy(d, n, phase):
-        if phase == "Copying":
+        if phase == "Writing card":
             event.set()
     with pytest.raises(DrivePakError, match="PHYSICAL WRITE INCOMPLETE.*No recovery backup was created"):
         device.write_direct(source, cancel_after_copy, event, acknowledge_no_backup=True)
@@ -329,3 +330,75 @@ def test_direct_write_rejects_oversize_same_file_and_prewrite_cancel(device, tmp
     with pytest.raises(Cancelled):
         device.write_direct(source, cancel=event, acknowledge_no_backup=True)
     assert device.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_card_write_flushes_bounded_batches_before_final_percentage(tmp_path, monkeypatch, direct):
+    from drivepak_manager import backup, streams
+    target, source = tmp_path / "card.bin", tmp_path / "source.img"
+    before, payload = b"\x11" * 4096, b"\x73" * 2560
+    target.write_bytes(before)
+    source.write_bytes(payload)
+    sim = SimulatedDevice(target)
+    recovery = tmp_path / "recovery.img"
+    if not direct:
+        sim.backup(recovery)
+    # Small batches exercise multiple boundaries without a large test fixture.
+    monkeypatch.setattr(streams, "CHUNK", 512)
+    monkeypatch.setattr(backup, "WRITE_SYNC_BYTES", 1024)
+    key = (target.stat().st_dev, target.stat().st_ino)
+    real_sync = os.fsync
+    events, sync_offsets = [], []
+    def sync(fd):
+        s = os.fstat(fd)
+        if (s.st_dev, s.st_ino) == key:
+            assert events[-1] == (0, 0, "Flushing card — keep card connected; verification follows")
+            sync_offsets.append(os.lseek(fd, 0, os.SEEK_CUR))
+        return real_sync(fd)
+    monkeypatch.setattr(os, "fsync", sync)
+    progress = lambda d, n, p: events.append((d, n, p))
+    result = sim.write_direct(source, progress, acknowledge_no_backup=True) if direct else sim.write(source, recovery, progress)
+    assert result["status"] == "verified"
+    assert sync_offsets == [1024, 2048, 2560]
+    assert target.read_bytes() == payload + before[len(payload):]
+    assert source.read_bytes() == payload
+    final_write = events.index((len(payload), len(payload), "Writing card"))
+    assert sum(p.startswith("Flushing card") for _, _, p in events[:final_write]) == 3
+    assert events[final_write + 1] == (0, len(payload), "Reading back written card range")
+    if not direct:
+        assert recovery.read_bytes() == before and verify_backup(recovery)["status"] == "verified"
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_card_batch_flush_error_is_incomplete_and_preserves_recovery(tmp_path, monkeypatch, direct):
+    from drivepak_manager import backup, streams
+    target, source = tmp_path / "card.bin", tmp_path / "source.img"
+    before, payload = b"\x12" * 4096, b"\x74" * 2560
+    target.write_bytes(before)
+    source.write_bytes(payload)
+    sim = SimulatedDevice(target)
+    recovery = tmp_path / "recovery.img"
+    if not direct:
+        sim.backup(recovery)
+    monkeypatch.setattr(streams, "CHUNK", 512)
+    monkeypatch.setattr(backup, "WRITE_SYNC_BYTES", 1024)
+    key = (target.stat().st_dev, target.stat().st_ino)
+    real_sync = os.fsync
+    failed = False
+    def sync(fd):
+        nonlocal failed
+        s = os.fstat(fd)
+        if (s.st_dev, s.st_ino) == key and not failed:
+            failed = True
+            raise OSError(errno.EIO, "injected batch flush failure")
+        return real_sync(fd)
+    monkeypatch.setattr(os, "fsync", sync)
+    with pytest.raises(DrivePakError, match="PHYSICAL WRITE INCOMPLETE.*batch flush failure"):
+        if direct:
+            sim.write_direct(source, acknowledge_no_backup=True)
+        else:
+            sim.write(source, recovery)
+    assert target.read_bytes() == payload[:1024] + before[1024:]
+    assert source.read_bytes() == payload
+    if not direct:
+        assert recovery.read_bytes() == before and verify_backup(recovery)["status"] == "verified"

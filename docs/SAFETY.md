@@ -149,12 +149,22 @@ write verification. The source, any supplied backup and device identity are chec
 Controller durability/flash retention beyond kernel flush/readback is a hardware
 property and remains outside the software's proof.
 
+Writes are synced in batches of up to 64 MiB (including the final partial batch)
+to bound queued dirty data. Flushing and preparation for readback have explicit
+indeterminate progress stages. The final write percentage follows the final
+batch sync, but only successful independent readback labels the card verified.
+The older 1.0.3 helper could show **Copying 100%** while the kernel still flushed
+an entire image queued in memory. Do not replace the helper during an operation.
+
 Cancellation is observed between bounded I/O chunks. Once writing begins,
 cancellation, unplugging, short write, flush error, source change or readback
 mismatch is reported as **PHYSICAL WRITE INCOMPLETE OR UNVERIFIED**. No automatic
 destructive retry occurs. A disconnected/crashed helper is also unverified.
 Direct-mode failures explicitly state that no recovery backup was created;
 recovery requires an existing backup or another known-good image.
+An in-flight kernel write/flush cannot be interrupted safely by the application;
+cancellation remains pending until the call returns. It has no forced timeout or
+automatic destructive retry. The GUI event loop remains active while waiting.
 
 ## Manual recovery
 

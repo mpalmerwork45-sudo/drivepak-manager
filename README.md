@@ -1,6 +1,6 @@
 # DrivePak Manager
 
-**Version 1.0.3 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
+**Version 1.0.4 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
 
 A native Python/PySide6 desktop utility for Roger Taylor's **CoCoNet MicroSD
 Drive Pak** proprietary card layout. Supports working images, Disk BASIC disk
@@ -114,7 +114,7 @@ To enable card access directly from a source installation:
 
 ```bash
 ./tools/build_linux.sh
-sudo ./dist/drivepak-manager-1.0.3-linux/install-helper.sh
+sudo ./dist/drivepak-manager-1.0.4-linux/install-helper.sh
 ```
 
 The helper is installed once, then updated when a release requires it. Device
@@ -125,8 +125,8 @@ To produce the Linux distribution, desktop launcher and helper:
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.0.3-linux.tar.gz -C /tmp
-/tmp/drivepak-manager-1.0.3-linux/install-user.sh
+tar -xzf dist/drivepak-manager-1.0.4-linux.tar.gz -C /tmp
+/tmp/drivepak-manager-1.0.4-linux/install-user.sh
 ```
 
 The user installer creates a private virtualenv, an Applications menu entry and
@@ -139,7 +139,7 @@ offline wheelhouse installation and uninstall commands.
 this administrator installation yourself:
 
 ```bash
-sudo /tmp/drivepak-manager-1.0.3-linux/install-helper.sh
+sudo /tmp/drivepak-manager-1.0.4-linux/install-helper.sh
 ```
 
 This installs only the constrained helper and its authentication policy. It does
@@ -186,6 +186,13 @@ Direct mode has no Save dialog. Both modes retain device protection, size checks
 source stability checks and mandatory readback verification. Direct writes require
 the 1.0.3 helper; update it using the administrator command above after any running
 card operation has finished.
+
+**Copying 100% with an older helper:** Linux may still be flushing queued data
+to the card. Keep it connected until **Card write verified** appears. Version
+1.0.4 adds explicit flushing/readback stages and syncs writes in 64 MiB batches
+to prevent a whole card image queuing in RAM. Slow readers/cards can take tens of
+minutes, followed by readback verification. Update the helper only after the
+current operation has finished.
 
 [User guide](docs/USER_GUIDE.md) · [Safety and recovery](docs/SAFETY.md) ·
 [Format and limitations](docs/FORMAT.md) · [Testing and spare-card checklist](docs/TESTING.md)
@@ -346,7 +353,7 @@ hashed; [provenance.json](docs/provenance.json) records actual sizes and SHA-256
 Those hashes establish reproducibility, not independent publisher authentication.
 The 2 GB-labelled reference contains **1,866,210,304** image bytes.
 
-Recorded 1.0.3 validation: **104 offline tests passed and 2 reference integration
+Recorded 1.0.4 validation: **110 offline tests passed and 2 reference integration
 tests passed**, with desktop startup and read-only selector inspection. This
 includes a synthetic T&D slot-31 import that preserves defaults, padding and
 unrelated data. Automated results are not physical-hardware proof; complete
