@@ -92,6 +92,38 @@ def test_worker_error_and_cancel_leave_ui_available(qtbot, tmp_path, monkeypatch
     window.close()
 
 
+def test_card_selector_blocks_empty_reader_until_refreshed_and_reselected(qtbot, monkeypatch):
+    from dataclasses import replace
+    from PySide6.QtWidgets import QDialogButtonBox
+    import drivepak_manager.gui as gui
+    from drivepak_manager.devices import Device
+    empty = Device("/dev/empty-reader-slot", 0, "USB microSD reader", "READER", "", "usb", "240:1", "/sys/simulated", "1", False, True)
+    monkeypatch.setattr(gui, "discover", lambda: [empty])
+    dialog = gui.DeviceDialog("Test card selector")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitUntil(lambda: dialog.worker is None)
+    assert dialog.table.item(0, 0).text() == empty.path
+    assert dialog.table.horizontalHeaderItem(0).text() == "Path"
+    dialog.table.setCurrentCell(0, 0)
+    assert "0 bytes" in dialog.table.item(0, 4).text()
+    assert "No readable card" in dialog.reason.text()
+    assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+    assert not dialog.unmount_button.isEnabled()
+    dialog.accept()
+    assert dialog.isVisible() and dialog.result() == QDialog.DialogCode.Rejected
+    loaded = replace(empty, capacity=32 * 1024**2)
+    monkeypatch.setattr(gui, "discover", lambda: [loaded])
+    dialog.refresh()
+    qtbot.waitUntil(lambda: dialog.worker is None)
+    assert dialog.selected() is None
+    assert not dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+    dialog.table.setCurrentCell(0, 0)
+    assert dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+    dialog.accept()
+    assert dialog.result() == QDialog.DialogCode.Accepted
+
+
 def test_gui_progress_handles_larger_than_four_gigabytes(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)

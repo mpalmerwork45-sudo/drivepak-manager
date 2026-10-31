@@ -31,8 +31,8 @@ To produce the Linux distribution, desktop launcher and helper:
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.0.0-linux.tar.gz -C /tmp
-/tmp/drivepak-manager-1.0.0-linux/install-user.sh
+tar -xzf dist/drivepak-manager-1.0.1-linux.tar.gz -C /tmp
+/tmp/drivepak-manager-1.0.1-linux/install-user.sh
 ```
 
 The user installer creates a private virtualenv, an Applications menu entry and
@@ -45,7 +45,7 @@ offline wheelhouse installation and uninstall commands.
 this administrator installation yourself:
 
 ```bash
-sudo /tmp/drivepak-manager-1.0.0-linux/install-helper.sh
+sudo /tmp/drivepak-manager-1.0.1-linux/install-helper.sh
 ```
 
 This installs only the constrained helper and its authentication policy. It does

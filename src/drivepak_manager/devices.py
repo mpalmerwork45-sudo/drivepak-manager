@@ -18,6 +18,14 @@ def command(args):
         raise SafetyError(f"System device inspection failed: {e}") from e
 
 
+def media_problem(capacity):
+    if capacity == 0:
+        return "No readable card detected (0 bytes). Reseat the card, or try another reader, then click Refresh."
+    if capacity < 512 or capacity % 512:
+        return f"Reader reports an invalid card capacity ({capacity:,} bytes); expected complete 512-byte blocks."
+    return None
+
+
 @dataclass(frozen=True)
 class Device:
     path: str
@@ -42,7 +50,16 @@ class Device:
 
     @property
     def usable(self):
-        return not self.reasons and not self.mounts
+        return not self.problems and not self.mounts
+
+    @property
+    def problems(self):
+        problem = media_problem(self.capacity)
+        return (*self.reasons, problem) if problem and problem not in self.reasons else self.reasons
+
+    @property
+    def status(self):
+        return "; ".join((*self.problems, *self.mounts)) or "Available, unmounted"
 
 
 class Topology:
@@ -185,6 +202,10 @@ def discover(topo=None, protected_paths=None):
         seq = seqpath.read_text().strip() if seqpath.exists() else ""
         mounts = sorted({m for k in family for m in (topo.rows.get(k, {}).get("mountpoints") or []) if m})
         reasons = []
+        capacity = int(row.get("size") or 0)
+        problem = media_problem(capacity)
+        if problem:
+            reasons.append(problem)
         if family & protected:
             reasons.append("Backs root, boot, home, swap or another protected system path")
         if not external:
@@ -200,7 +221,7 @@ def discover(topo=None, protected_paths=None):
             users = open_device_users(family, strict=os.geteuid() == 0)
             if users:
                 reasons.append("Raw device is open by " + ", ".join(users))
-        result.append(Device(row.get("path") or row["name"], int(row["size"]), (row.get("model") or "Unknown reader").strip(),
+        result.append(Device(row.get("path") or row["name"], capacity, (row.get("model") or "Unknown reader").strip(),
                              row.get("serial") or "", row.get("wwn") or "", row.get("tran") or "", key,
                              str(sys.resolve()), seq, bool(row.get("ro")), external, tuple(mounts), tuple(reasons),
                              tuple(sorted(topo.rows[k].get("path", topo.rows[k]["name"]) for k in family if k != key and k in topo.rows))))
@@ -211,10 +232,12 @@ def validate(expected, storage_paths=(), storage_fds=()):
     topo = topology()
     candidates = discover(topo)
     found = next((d for d in candidates if d.path == expected["path"]), None)
+    if found is not None and media_problem(found.capacity):
+        raise SafetyError(f"{found.path}: {media_problem(found.capacity)}")
     if found is None or found.identity != expected:
         raise SafetyError("Card identity/capacity changed or device was replaced. Refresh and select it again.")
     if not found.usable:
-        raise SafetyError("Card is in use or unsafe: " + "; ".join((*found.reasons, *found.mounts)))
+        raise SafetyError("Card is in use or unsafe: " + "; ".join((*found.problems, *found.mounts)))
     related = topo.family(found.major_minor)
     for path in storage_paths:
         if related & path_devices(path, topo):
@@ -235,7 +258,7 @@ def validate(expected, storage_paths=(), storage_fds=()):
 def unmount(device):
     """Explicit UI action only. UDisks supplies per-session authentication."""
     current = next((d for d in discover() if d.identity == device.identity), None)
-    if not current or current.reasons:
+    if not current or current.problems:
         raise SafetyError("Cannot unmount a protected or changed device.")
     topo = topology()
     for key in topo.family(device.major_minor):

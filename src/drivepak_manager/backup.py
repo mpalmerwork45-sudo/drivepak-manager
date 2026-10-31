@@ -10,8 +10,14 @@ from .streams import (atomic_output, checkpoint, copy_stream, distinct, fingerpr
                       hash_stream, need_space, report, utcnow, write_json)
 
 
+def require_capacity(capacity):
+    if not isinstance(capacity, int) or capacity < 512 or capacity % 512:
+        raise SafetyError(f"No valid readable card capacity ({capacity} bytes). Check the card and reader before starting a backup or write.")
+
+
 def snapshot_stream(target, capacity, identity, output, readback, progress=None, cancel=None, guard=None):
     """Caller holds exclusive stable target access. readback is separately opened."""
+    require_capacity(capacity)
     if guard:
         guard()
     digest = copy_stream(target, output, capacity, progress, cancel, guard)
@@ -46,6 +52,7 @@ def verify_backup(path, progress=None, cancel=None):
         m = json.loads(manifest_path.read_text())
         if m["schema"] != 1 or m["kind"] != "complete-physical-backup" or m["status"] != "verified" or m["bytes"] != m["capacity"]:
             raise ValueError("not a complete verified snapshot")
+        require_capacity(m["capacity"])
         with path.open("rb", buffering=0) as f:
             before = fingerprint(f)
             if before[2] != m["capacity"] or hash_stream(f, before[2], progress, cancel) != m["sha256"]:
@@ -59,6 +66,7 @@ def verify_backup(path, progress=None, cancel=None):
 
 def restore_stream(target, capacity, identity, source, backup, manifest, progress=None, cancel=None, guard=None):
     """Never writes until target's complete current contents match the backup."""
+    require_capacity(capacity)
     if not isinstance(manifest, dict) or manifest.get("kind") != "complete-physical-backup" or manifest.get("status") != "verified" or manifest.get("schema") != 1:
         raise SafetyError("A verified complete backup manifest is required.")
     if manifest.get("identity") != identity or manifest.get("capacity") != capacity or manifest.get("bytes") != capacity:
@@ -131,6 +139,7 @@ class SimulatedDevice:
         if not stat.S_ISREG(s.st_mode):
             raise SafetyError("Simulation accepts only regular files, never devices.")
         self.capacity = s.st_size
+        require_capacity(self.capacity)
         self.key = (s.st_dev, s.st_ino, s.st_size)
         self.identity = {"simulated": True, "path": str(self.path), "device": s.st_dev, "inode": s.st_ino, "capacity": s.st_size}
 

@@ -6,7 +6,7 @@ enumeration was exercised. The actual PySide6 Widgets interface was launched on
 the X desktop, browsed and visually inspected. The helper was staged under `/tmp`,
 with no system installation or configuration change.
 
-Recorded results (2026-10-31): **75 offline tests passed, 2 reference tests
+Recorded results (2026-10-31): **91 offline tests passed, 2 reference tests
 skipped by default; both opt-in reference integration tests passed**.
 
 ## Reproduce
@@ -56,7 +56,7 @@ observations from this desktop, not performance guarantees for other systems.
 | OS-9 | Root/descriptors/segments/names, extraction, complete volume add/export/replace, invalid extents and explicitly acknowledged diagnostic export |
 | Backups/write | Complete simulated snapshots, durable reopen/hash, restore/readback, larger-target tail, stale/foreign/modified provenance, second target and racing output protection |
 | I/O failures | Short reads/writes, EOF/EIO, zero writes, ENOSPC/space checks, cancellation before/during writing, replacement, source instability, readback mismatch and missing privilege/authentication |
-| Device protection | USB with false removable flag, internal/system/root/home/swap paths, parent/partition/mapper relationships, backing conflicts, mounts, disk sequence and other raw opens |
+| Device protection | USB with false removable flag, empty/zero-capacity slots, media removal after selection, internal/system/root/home/swap paths, parent/partition/mapper relationships, backing conflicts, mounts, disk sequence and other raw opens |
 | Helper protocol | Real SCM_RIGHTS transport, descriptor restrictions, exclusive flags, snapshot/write dispatch and readback using a regular-file adapter for target open/stat/ioctl |
 | GUI | Open/browse/import/export/save, file insert/rename/extract/delete, partition create/rename/delete, OS-9 browse/extract, simulated card workflow, cancellation/errors, event-loop heartbeat and progress above 4 GiB |
 | Packaging | No media/private data, fixed helper module inventory, syntax/licenses/auth policy, offline clean user installation and staged helper installation |

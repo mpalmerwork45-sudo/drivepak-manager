@@ -1,4 +1,5 @@
 import os
+import errno
 from pathlib import Path
 import socket
 
@@ -60,6 +61,67 @@ def test_mounts_and_missing_diskseq_disable_access(tmp_path):
     (tmp_path / "dev/block/8:16/diskseq").unlink()
     d = next(d for d in discover(t, protected_paths=[]) if d.path == "/dev/usb")
     assert any("sequence" in r for r in d.reasons)
+
+
+@pytest.mark.parametrize("capacity", [0, None])
+def test_empty_reader_slot_is_visible_but_not_available(tmp_path, capacity):
+    topo = fake_topology(tmp_path)
+    topo.rows["8:16"]["size"] = capacity
+    d = next(d for d in discover(topo, protected_paths=[]) if d.path == "/dev/usb")
+    assert d.capacity == 0 and not d.usable
+    assert "0 bytes" in d.status and "No readable card" in d.status
+    assert "Available" not in d.status
+    assert d.reasons and d.path == "/dev/usb"
+
+
+def test_capacity_alone_blocks_access_even_without_discovery_reasons(tmp_path):
+    from dataclasses import replace
+    d = next(d for d in discover(fake_topology(tmp_path), protected_paths=[]) if d.path == "/dev/usb")
+    for capacity in (0, 1, 513):
+        invalid = replace(d, capacity=capacity, reasons=())
+        assert not invalid.usable and invalid.problems
+        assert "Available" not in invalid.status
+
+
+def test_card_removed_after_selection_is_reported_before_storage_checks(tmp_path, monkeypatch):
+    from dataclasses import replace
+    import drivepak_manager.devices as devices
+    import drivepak_manager.linux as linux
+    topo = fake_topology(tmp_path)
+    original = next(d for d in discover(topo, protected_paths=[]) if d.path == "/dev/usb")
+    empty = replace(original, capacity=0)
+    monkeypatch.setattr(devices, "topology", lambda: topo)
+    monkeypatch.setattr(devices, "discover", lambda t: [empty])
+    monkeypatch.setattr(devices, "path_devices", lambda *a: pytest.fail("Storage checks must not run without media"))
+    monkeypatch.setattr(linux, "invoke", lambda *a, **kw: pytest.fail("Helper must not run without media"))
+    with pytest.raises(SafetyError, match="No readable card"):
+        validate(original.identity)
+    output = tmp_path / "backup.img"
+    with pytest.raises(SafetyError, match="No readable card"):
+        linux.backup_card(empty, output)
+    assert not output.exists() and not (tmp_path / "backup.img.json").exists()
+    assert not list(tmp_path.glob("*.partial"))
+
+
+@pytest.mark.parametrize("error_number", [errno.ENOMEDIUM, errno.ENODEV, errno.ENXIO])
+def test_helper_explains_missing_media_during_open(tmp_path, monkeypatch, error_number):
+    from drivepak_manager.helper import open_card
+    d = next(d for d in discover(fake_topology(tmp_path), protected_paths=[]) if d.path == "/dev/usb")
+    def unavailable(path, flags):
+        assert path == d.path and flags & os.O_EXCL and flags & os.O_NOFOLLOW
+        raise OSError(error_number, os.strerror(error_number), path)
+    monkeypatch.setattr(os, "open", unavailable)
+    with pytest.raises(SafetyError, match="Refresh.*No card I/O started"):
+        open_card(d, os.O_RDONLY)
+
+
+def test_helper_never_opens_a_zero_capacity_reader(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from drivepak_manager.helper import open_card
+    d = next(d for d in discover(fake_topology(tmp_path), protected_paths=[]) if d.path == "/dev/usb")
+    monkeypatch.setattr(os, "open", lambda *a, **kw: pytest.fail("An empty reader must not be opened"))
+    with pytest.raises(SafetyError, match="No readable card"):
+        open_card(replace(d, capacity=0), os.O_RDONLY)
 
 
 def test_helper_missing_privileges_and_descriptor_restrictions(tmp_path, monkeypatch):

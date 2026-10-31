@@ -58,6 +58,9 @@ model, actual bytes, path, serial/WWN or kernel disk sequence, transport and use
 status. USB readers are eligible even with a false removable flag. Removable MMC
 is supported. Other/internal transports are rejected. This intentionally excludes
 ambiguous hardware rather than trusting a `/dev/sdX` name or removable bit alone.
+Reader slots reporting zero or invalid capacity are visible but unavailable.
+They cannot produce a verified empty backup or start a write. Media loss during
+the exclusive open is reported as a missing/disconnected card, before card I/O.
 
 The protection graph joins whole disks, partitions and sysfs holders/slaves,
 including device mapper/crypt/LVM relationships. Root, boot, home and swap backing

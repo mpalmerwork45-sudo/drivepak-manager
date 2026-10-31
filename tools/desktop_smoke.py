@@ -13,6 +13,7 @@ args = argparse.ArgumentParser(description=__doc__)
 args.add_argument("--offscreen", action="store_true")
 args.add_argument("--keep-open", action="store_true")
 args.add_argument("--installed-launcher", help="also check startup of this installed desktop entrypoint")
+args.add_argument("--device-picker", action="store_true", help="inspect read-only device enumeration; never opens, backs up or unmounts a card")
 options = args.parse_args()
 if options.offscreen:
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -32,13 +33,35 @@ if options.installed_launcher:
         process.stderr.close()
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
-from drivepak_manager.gui import MainWindow
+from PySide6.QtWidgets import QApplication, QDialogButtonBox
+from drivepak_manager.gui import MainWindow, DeviceDialog
 from drivepak_manager.image import Image, create_blank
 from drivepak_manager.filesystems.decb import DECB
 
 work = ROOT / "data/work"
 work.mkdir(parents=True, exist_ok=True)
+if options.device_picker:
+    app = QApplication(["DrivePak Manager reader inspection"])
+    picker = DeviceDialog("Select card to back up and open")
+    picker.show()
+    def inspect_picker():
+        if picker.worker:
+            return
+        for row, device in enumerate(picker.devices):
+            if device.capacity <= 0:
+                picker.table.setCurrentCell(row, 0)
+                assert not picker.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+                assert "0 bytes" in picker.reason.text()
+        assert picker.table.horizontalHeaderItem(0).text() == "Path"
+        picker.grab().save(str(work / "reader-status.png"))
+        print(f"Read-only device selector inspected: {len(picker.devices)} devices; zero-capacity readers unavailable.", flush=True)
+        picker.reject()
+        app.quit()
+    timer = QTimer()
+    timer.timeout.connect(inspect_picker)
+    timer.start(100)
+    QTimer.singleShot(30000, lambda: app.exit(1))
+    raise SystemExit(app.exec())
 image = work / "desktop-demo-original.img"
 if not image.exists():
     create_blank(image, 16 * 1024**2, 4)

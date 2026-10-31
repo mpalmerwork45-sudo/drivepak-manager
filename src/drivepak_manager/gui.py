@@ -79,12 +79,13 @@ class DeviceDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Select an external USB reader or removable MMC card. System/internal disks are protected."))
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Device / model", "Actual capacity", "Serial / stable ID", "Mount / use status", "Path"])
+        self.table.setHorizontalHeaderLabels(["Path", "Device / model", "Actual capacity", "Serial / stable ID", "Mount / use status"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.setWordWrap(False)
         layout.addWidget(self.table)
         self.reason = QLabel("Refresh the list, then select a card.")
         self.reason.setWordWrap(True)
@@ -140,9 +141,11 @@ class DeviceDialog(QDialog):
             self.table.clearSelection()
             self.table.setCurrentCell(-1, -1)
             for row, d in enumerate(self.devices):
-                values = [d.model, f"{d.capacity:,} bytes ({human(d.capacity)})", d.serial or d.wwn or f"diskseq {d.diskseq}", "; ".join((*d.reasons, *d.mounts)) or "Available, unmounted", d.path]
+                values = [d.path, d.model, f"{d.capacity:,} bytes ({human(d.capacity)})", d.serial or d.wwn or f"diskseq {d.diskseq}", d.status]
                 for col, value in enumerate(values):
-                    self.table.setItem(row, col, QTableWidgetItem(value))
+                    item = QTableWidgetItem(value)
+                    item.setToolTip(value)
+                    self.table.setItem(row, col, item)
             self.update_selection()
             worker.deleteLater()
         worker.finished.connect(finish)
@@ -154,6 +157,13 @@ class DeviceDialog(QDialog):
             self.reason.setText("Finishing device inspection/unmount, then closing…")
         else:
             super().reject()
+
+    def accept(self):
+        device = self.selected()
+        if not self.worker and device and device.usable:
+            super().accept()
+        elif device:
+            self.reason.setText(device.status)
 
     def closeEvent(self, event):
         if self.worker:
@@ -169,8 +179,8 @@ class DeviceDialog(QDialog):
     def update_selection(self):
         d = self.selected()
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(bool(d and d.usable and not self.worker))
-        self.unmount_button.setEnabled(bool(d and d.mounts and not d.reasons and not self.worker))
-        self.reason.setText(("; ".join((*d.reasons, *d.mounts)) or "Available. Identity and use status will be checked again before device access.") if d else "Select a card. No write destination is remembered.")
+        self.unmount_button.setEnabled(bool(d and d.mounts and not d.problems and not self.worker))
+        self.reason.setText(("Available. Identity and use status will be checked again before device access." if d.usable else d.status) if d else "Select a card. No write destination is remembered.")
 
     def unmount_selected(self):
         d = self.selected()

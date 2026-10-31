@@ -199,6 +199,31 @@ def test_regular_file_operations_reject_device_nodes(tmp_path):
         copy_verified("/dev/null", tmp_path / "bad.img")
 
 
+@pytest.mark.parametrize("capacity", [0, -512, 1, 513, None])
+def test_no_backup_or_write_with_an_invalid_capacity(capacity):
+    with pytest.raises(SafetyError, match="No valid readable card capacity"):
+        snapshot_stream(None, capacity, {}, None, None)
+    with pytest.raises(SafetyError, match="No valid readable card capacity"):
+        restore_stream(None, capacity, {}, None, None, {})
+
+
+def test_zero_length_simulated_device_cannot_produce_a_verified_backup(tmp_path):
+    empty = tmp_path / "empty-device"
+    empty.touch()
+    with pytest.raises(SafetyError, match="0 bytes"):
+        SimulatedDevice(empty)
+
+
+def test_empty_backup_cannot_be_verified_even_with_a_matching_manifest(tmp_path):
+    import hashlib
+    output = tmp_path / "empty.img"
+    output.touch()
+    Path(str(output) + ".json").write_text(json.dumps({"schema": 1, "kind": "complete-physical-backup", "status": "verified",
+        "bytes": 0, "capacity": 0, "sha256": hashlib.sha256(b"").hexdigest()}))
+    with pytest.raises(SafetyError, match="0 bytes"):
+        verify_backup(output)
+
+
 def test_truncated_source_and_read_error_abort_snapshot(device, tmp_path):
     output = tmp_path / "truncated.img"
     device.capacity += 512

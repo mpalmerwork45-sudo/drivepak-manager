@@ -4,6 +4,7 @@ Only the installed root-owned zipapp is invoked by pkexec. The caller sends
 regular-file descriptors over a peer-credential-checked local Unix socket.
 """
 import array
+import errno
 import fcntl
 import json
 import os
@@ -20,6 +21,19 @@ from .errors import SafetyError
 
 BLKGETSIZE64 = 0x80081272
 BLKFLSBUF = 0x1261
+
+
+def open_card(device, access):
+    if not device.usable:
+        raise SafetyError(f"{device.path}: {device.status}")
+    try:
+        return os.open(device.path, access | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as e:
+        if e.errno == errno.ENOMEDIUM:
+            raise SafetyError(f"{device.path}: the reader reports no readable card. Reseat the card or try another reader, then Refresh and select it again. No card I/O started.") from e
+        if e.errno in (errno.ENODEV, errno.ENXIO):
+            raise SafetyError(f"{device.path}: the card reader or its media is no longer available. Reconnect it, then Refresh and select it again. No card I/O started.") from e
+        raise
 
 
 def send(sock, value):
@@ -88,7 +102,7 @@ def serve(sock, uid):
         if not device.path.startswith("/dev/") or str(Path(device.path).resolve()) != device.path:
             raise SafetyError("Expected a canonical device path directly under /dev.")
         access = os.O_RDONLY if op == "backup" else os.O_RDWR
-        fd = os.open(device.path, access | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = open_card(device, access)
         opened.append(fd)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         s = os.fstat(fd)

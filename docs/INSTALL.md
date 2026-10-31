@@ -9,8 +9,8 @@ image operations are portable Python; real card access is Linux-only.
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.0.0-linux.tar.gz -C /tmp
-cd /tmp/drivepak-manager-1.0.0-linux
+tar -xzf dist/drivepak-manager-1.0.1-linux.tar.gz -C /tmp
+cd /tmp/drivepak-manager-1.0.1-linux
 sha256sum -c SHA256SUMS
 ./install-user.sh
 ```
@@ -88,6 +88,13 @@ working images are user data and are never automatically removed by uninstall.
 
 ## Startup troubleshooting
 
+* **Reader reports 0 bytes / No medium found:** Linux sees the USB reader but
+  does not report readable card capacity. Empty slots remain listed as
+  **No readable card detected**, and selection cannot start a backup or write.
+  Reseat the microSD in the reader, reconnect the reader, then **Refresh**.
+  Try another existing reader if available. Proceed only when the card reports
+  a nonzero capacity. No formatting is needed to back up a proprietary DrivePak
+  card; this check happens before any card layout is read.
 * Qt `xcb` errors inside a restricted execution sandbox can mean denied display
   access. Launch from a normal Kubuntu terminal. Headless tests use
   `QT_QPA_PLATFORM=offscreen`.
