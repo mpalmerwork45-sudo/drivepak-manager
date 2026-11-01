@@ -20,6 +20,11 @@
   bytes plus a durable receipt on independent storage before writing. A changed-
   sector journal is never described as a complete physical backup. Preserve the
   original images and all journals; recovery rejects unknown/torn sector data.
+  Recovery must also compare every unjournaled byte within the original image
+  range; reader serial plus matching edited sectors alone is insufficient.
+  Bind application to the reviewed journal checksum. The privileged helper must
+  verify the published receipt's actual descriptor, content and storage before
+  writing, and recheck current target use status at that checkpoint.
 * Use checked offsets and bounded buffers. A failed/cancelled mutation rolls back
   the working image. Partial card writes are failures requiring manual recovery.
 * Reference downloads are research only, not redistributable application assets.

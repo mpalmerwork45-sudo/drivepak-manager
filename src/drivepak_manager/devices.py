@@ -159,6 +159,8 @@ def path_devices(path, topo=None):
     # for every physical source; fail closed if no mapping can be established.
     info = json.loads(command(["/usr/bin/findmnt", "--json", "--target", str(p), "--output", "MAJ:MIN,SOURCE,FSTYPE"]))
     sources = info.get("filesystems", [])
+    if not sources:
+        raise SafetyError(f"Cannot establish storage backing {p}: no filesystem mapping was returned.")
     keys = set()
     for fs in sources:
         mm = fs.get("maj:min", "")

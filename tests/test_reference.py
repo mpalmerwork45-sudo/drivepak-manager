@@ -68,3 +68,31 @@ def test_reference_offsets_roundtrip_file_edit_and_every_unrelated_byte(referenc
         OS9(image.volume(36))
     session.close()
     assert hash_file(reference) == EXPECTED
+
+
+def test_reference_changed_sector_apply_and_recovery(reference, tmp_path):
+    """Full-size actual layout, but the 'card' is strictly a disposable file."""
+    import struct
+    from drivepak_manager.backup import SimulatedDevice
+    from drivepak_manager.patches import HEADER, prepare_changes
+    from drivepak_manager.streams import copy_verified
+    session = Session.open(reference, tmp_path / "work")
+    try:
+        DECB(session.image.volume(0, 0)).rename("DPX.BAS", "MANAGER.BAS")
+        target, journal = tmp_path / "simulated-card.bin", tmp_path / "changes.dpp"
+        copy_verified(reference, target)
+        prepared = prepare_changes(reference, session.working, journal, expected_original=EXPECTED)
+        # This one independently calculated directory sector is the entire write
+        # set, including its preserved 256-byte physical padding.
+        assert prepared["sectors"] == 1 and prepared["bytes_changed"] == 512
+        with journal.open("rb") as records:
+            records.seek(HEADER.size)
+            assert struct.unpack(">Q", records.read(8))[0] == (1024 + 308) * 512
+        card = SimulatedDevice(target)
+        result = card.apply_changes(journal, str(journal) + ".json", expected_journal=prepared["journal_sha256"])
+        assert result["status"] == "verified" and result["bytes_written"] == 512
+        assert hash_file(target) == hash_file(session.working) == prepared["modified_sha256"]
+        assert card.apply_changes(journal, tmp_path / "recovered.json", recovery=True)["status"] == "verified"
+        assert hash_file(target) == hash_file(reference) == EXPECTED
+    finally:
+        session.close()

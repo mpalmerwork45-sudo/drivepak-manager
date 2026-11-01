@@ -4,6 +4,7 @@ No privilege is acquired and no /dev node is opened. Only the strict target
 open/stat/ioctl boundary is substituted with a regular-file simulation.
 """
 import array
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -81,6 +82,7 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
             payload["acknowledge_no_backup"] = True
         if acknowledge_in_place:
             payload["acknowledge_in_place"] = True
+            payload["journal_sha256"] = hashlib.sha256(Path(files[0].name).read_bytes()).hexdigest()
 
         def serve():
             with server:
@@ -100,8 +102,10 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
                     future.result(timeout=5)
                     return event["result"]
                 if event["event"] == "recovery-ready":
-                    write_json(tmp_path / "edits.dpp.json", event["manifest"])
-                    client.send(b"recovery-saved")
+                    saved = tmp_path / "edits.dpp.json"
+                    write_json(saved, event["manifest"])
+                    with saved.open("rb", buffering=0) as receipt:
+                        client.sendmsg([b"recovery-saved"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [receipt.fileno()]))])
 
     backup = tmp_path / "backup.img"
     with backup.open("w+b", buffering=0) as out, backup.open("rb", buffering=0) as readback:
@@ -169,3 +173,124 @@ def test_old_installed_helper_has_actionable_update_error_before_elevation(tmp_p
     monkeypatch.setattr(linux.subprocess, "Popen", lambda *a, **kw: pytest.fail("Outdated helper was elevated"))
     with pytest.raises(SafetyError, match="install-helper.sh.*No device was opened"):
         linux.invoke("write-direct", {}, [], acknowledge_no_backup=True)
+
+
+def test_earlier_patch_helper_rejected_before_elevation(tmp_path, monkeypatch):
+    import zipfile
+    from drivepak_manager import linux
+    entry = tmp_path / "drivepak-manager-helper"
+    with zipfile.ZipFile(entry.with_name("drivepak-manager-helper.pyz"), "w") as archive:
+        archive.writestr("helper-capabilities.json", json.dumps({"protocol": 1, "operations": ["write-patch"]}))
+    monkeypatch.setattr(linux, "HELPER", entry)
+    monkeypatch.setattr(linux, "helper_installed", lambda: True)
+    monkeypatch.setattr(linux.subprocess, "Popen", lambda *a, **kw: pytest.fail("Unaudited helper was elevated"))
+    with pytest.raises(SafetyError, match="install-helper.sh.*No device was opened"):
+        linux.invoke("write-patch", {}, [], acknowledge_in_place=True, recovery_manifest_path=tmp_path / "receipt.json")
+
+
+@pytest.mark.parametrize("fault", [None, "missing-fd", "cancel", "disconnect", "writable", "wrong-content", "unpublished", "storage-conflict", "new-device-use", "fsync-failure"])
+def test_helper_checks_published_recovery_receipt_and_storage(tmp_path, monkeypatch, fault):
+    receipt = tmp_path / "receipt.json"
+    expected = {"kind": "changed-sector-recovery", "journal_sha256": "expected", "status": "verified"}
+    write_json(receipt, {} if fault == "wrong-content" else expected)
+    validated = []
+    def validate(identity, storage_paths=(), storage_fds=()):
+        assert identity == {"selected": "simulated"} and len(storage_fds) == 1
+        assert os.fstat(storage_fds[0]).st_ino == receipt.stat().st_ino
+        validated.append(True)
+        if fault in ("storage-conflict", "new-device-use"):
+            raise SafetyError("Simulated unsafe storage or new device use")
+    monkeypatch.setattr(helper, "validate", validate)
+    if fault == "fsync-failure":
+        def fail_sync(fd):
+            raise OSError("Simulated receipt flush failure")
+        monkeypatch.setattr(os, "fsync", fail_sync)
+    client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with client, server, receipt.open("r+b" if fault == "writable" else "rb", buffering=0) as saved:
+        if fault == "unpublished":
+            receipt.unlink()
+        if fault == "disconnect":
+            client.shutdown(socket.SHUT_WR)
+        else:
+            fds = [] if fault in ("missing-fd", "cancel") else [saved.fileno()]
+            ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))] if fds else []
+            client.sendmsg([b"cancel" if fault == "cancel" else b"recovery-saved"], ancillary)
+        if fault:
+            with pytest.raises((SafetyError, OSError)):
+                helper.confirm_recovery_receipt(server, os.getuid(), expected, {"selected": "simulated"}, [])
+        else:
+            fd, state = helper.confirm_recovery_receipt(server, os.getuid(), expected, {"selected": "simulated"}, [])
+            try:
+                assert helper.fingerprint_from_fd(fd) == state
+                assert validated == [True]
+            finally:
+                os.close(fd)
+
+
+def test_linux_client_transfers_durable_receipt_descriptor(tmp_path, monkeypatch):
+    """Actual client socket loop; fake pkexec never opens a block device."""
+    import io
+    import threading
+    import zipfile
+    from drivepak_manager import linux
+    entry, journal, receipt = [tmp_path / n for n in ("helper", "edits.dpp", "edits.dpp.json")]
+    journal.write_bytes(b"journal used only for transport testing")
+    manifest = {"kind": "changed-sector-recovery", "status": "verified", "journal_sha256": hashlib.sha256(journal.read_bytes()).hexdigest()}
+    with zipfile.ZipFile(entry.with_name("drivepak-manager-helper.pyz"), "w") as archive:
+        archive.writestr("helper-capabilities.json", json.dumps({"protocol": 1, "operations": ["write-patch"], "card_edits_version": 2}))
+    monkeypatch.setattr(linux, "HELPER", entry)
+    monkeypatch.setattr(linux, "helper_installed", lambda: True)
+    real_socket = socket.socket
+    class SimulatedPeerSocket(real_socket):
+        def getsockopt(self, level, option, *args):
+            if level == socket.SOL_SOCKET and option == socket.SO_PEERCRED:
+                return struct.pack("3i", os.getpid(), 0, os.getgid())
+            return super().getsockopt(level, option, *args)
+    monkeypatch.setattr(socket, "socket", SimulatedPeerSocket)
+    checked = []
+    def validate(expected, storage_paths=(), storage_fds=()):
+        assert len(storage_fds) == 2
+        assert os.fstat(storage_fds[1]).st_ino == receipt.stat().st_ino
+        checked.append(True)
+    monkeypatch.setattr(helper, "validate", validate)
+    class LocalProcess:
+        def __init__(self, args, **kwargs):
+            assert args[0] == "/usr/bin/pkexec"  # intercepted, never executed
+            self.stderr, self.returncode = io.BytesIO(), None
+            self.thread = threading.Thread(target=self.run, args=(args[-1],))
+            self.thread.start()
+        def run(self, endpoint):
+            fds = array.array("i")
+            try:
+                with real_socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as server:
+                    server.connect(endpoint)
+                    raw, ancillary, flags, _ = server.recvmsg(65536, socket.CMSG_SPACE(32))
+                    for level, kind, data in ancillary:
+                        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                            fds.frombytes(data[:len(data) - len(data) % fds.itemsize])
+                    request = json.loads(raw)
+                    assert request["journal_sha256"] == manifest["journal_sha256"]
+                    fd, state = helper.confirm_recovery_receipt(server, os.getuid(), manifest, {}, fds)
+                    fds.append(fd)
+                    assert helper.fingerprint_from_fd(fd) == state
+                    helper.send(server, {"event": "result", "result": {"status": "verified"}})
+                self.returncode = 0
+            except Exception as e:
+                self.stderr.write(repr(e).encode())
+                self.stderr.seek(0)
+                self.returncode = 1
+            finally:
+                for fd in fds:
+                    os.close(fd)
+        def poll(self):
+            return self.returncode
+        def wait(self, timeout):
+            self.thread.join(timeout)
+            assert not self.thread.is_alive()
+            return self.returncode
+    monkeypatch.setattr(linux.subprocess, "Popen", LocalProcess)
+    with journal.open("rb", buffering=0) as source:
+        result = linux.invoke("write-patch", {}, [source.fileno()], acknowledge_in_place=True,
+                              recovery_manifest_path=receipt, expected_journal=manifest["journal_sha256"])
+    assert result["status"] == "verified" and checked == [True]
+    assert json.loads(receipt.read_text()) == manifest

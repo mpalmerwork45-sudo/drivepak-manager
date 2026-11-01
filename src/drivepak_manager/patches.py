@@ -31,7 +31,7 @@ def prepare_changes(original, working, destination, expected_original=None, prog
         size = of[2]
         if not size or size % BLOCK or nf[2] != size:
             raise SafetyError("In-place edits require equal, nonempty, 512-byte-aligned image lengths.")
-        before_hash, after_hash = hashlib.sha256(), hashlib.sha256()
+        before_hash, after_hash, record_hash = hashlib.sha256(), hashlib.sha256(), hashlib.sha256()
         count = 0
         with atomic_output(destination) as out:
             write_all(out, bytes(HEADER.size))
@@ -45,7 +45,9 @@ def prepare_changes(original, working, destination, expected_original=None, prog
                     need_space(Path(destination).parent, (length // BLOCK) * RECORD_SIZE)
                     for pos in range(0, length, BLOCK):
                         if a[pos:pos+BLOCK] != b[pos:pos+BLOCK]:
-                            write_all(out, struct.pack(">Q", offset + pos) + a[pos:pos+BLOCK] + b[pos:pos+BLOCK])
+                            record = struct.pack(">Q", offset + pos) + a[pos:pos+BLOCK] + b[pos:pos+BLOCK]
+                            record_hash.update(record)
+                            write_all(out, record)
                             count += 1
                 report(progress, offset + length, size, "Finding changed physical sectors")
             digest = before_hash.hexdigest()
@@ -54,12 +56,35 @@ def prepare_changes(original, working, destination, expected_original=None, prog
             if fingerprint(old) != of or fingerprint(new) != nf:
                 raise SafetyError("An image changed while preparing its edit journal.")
             out.seek(0)
-            write_all(out, HEADER.pack(MAGIC, size, count, before_hash.digest()))
+            header = HEADER.pack(MAGIC, size, count, before_hash.digest())
+            write_all(out, header)
             report(progress, 0, 0, "Flushing edit recovery journal")
+            out.flush()
+            os.fsync(out.fileno())
+            # Check the bytes actually saved against the bytes derived from the
+            # images, before publishing a usable recovery file.
+            with open(out.partial_path, "rb", buffering=0) as saved:
+                if os.fstat(saved.fileno()).st_size != HEADER.size + count * RECORD_SIZE or read_exact(saved, HEADER.size) != header:
+                    raise DrivePakError("Edit journal header/length verification failed.")
+                body = hashlib.sha256()
+                saved_hash = hashlib.sha256(header)
+                length = count * RECORD_SIZE
+                report(progress, 0, length, "Verifying saved edit recovery journal")
+                for offset in range(0, length, CHUNK):
+                    checkpoint(cancel)
+                    chunk = read_exact(saved, min(CHUNK, length - offset))
+                    body.update(chunk)
+                    saved_hash.update(chunk)
+                    report(progress, min(offset + CHUNK, length), length, "Verifying saved edit recovery journal")
+                if body.digest() != record_hash.digest():
+                    raise DrivePakError("Edit journal record verification failed.")
+            if fingerprint(old) != of or fingerprint(new) != nf:
+                raise SafetyError("An image changed while verifying its edit journal.")
         # Accidental edits through another application should fail immediately.
         Path(destination).chmod(0o400)
         return {"sectors": count, "bytes_changed": count * BLOCK, "image_bytes": size,
                 "original_sha256": digest, "modified_sha256": after_hash.hexdigest(),
+                "journal_sha256": saved_hash.hexdigest(),
                 "journal": str(Path(destination).resolve())}
 
 
@@ -87,7 +112,7 @@ def records(source, length, count):
 
 def _same_target(previous, current):
     # Kernel diskseq/path can change after unplugging; stable reader identity and
-    # capacity plus every affected sector's exact bytes must still agree.
+    # capacity plus the complete image-sized content comparison must still agree.
     if not isinstance(previous, dict):
         return False
     keys = ("model", "serial", "wwn", "capacity", "transport")
@@ -96,9 +121,44 @@ def _same_target(previous, current):
     return bool(previous.get("serial") or previous.get("wwn")) or previous == current
 
 
+def compare_original(target, source, length, count, baseline, recovery, progress, cancel, guard):
+    """Prove the entire prefix is original except known journal after sectors.
+
+    A USB serial may identify only a reader. Matching just affected sectors is
+    insufficient for recovery: later edits elsewhere can share filesystem state.
+    Normalize known after sectors to before bytes only in this bounded RAM buffer.
+    """
+    phase = "Checking complete card state for recovery" if recovery else "Comparing card with editor original"
+    report(progress, 0, length, phase)
+    entries = records(source, length, count)
+    entry = next(entries, None)
+    digest = hashlib.sha256()
+    target.seek(0)
+    for offset in range(0, length, CHUNK):
+        checkpoint(cancel)
+        if guard:
+            guard()
+        data = bytearray(read_exact(target, min(CHUNK, length - offset)))
+        end = offset + len(data)
+        while entry is not None and entry[0] < end:
+            position, before, after = entry
+            pos = position - offset
+            current = data[pos:pos + BLOCK]
+            if current != before and (not recovery or current != after):
+                raise SafetyError(f"Card sector {position // BLOCK} differs from the journal. No edits were written.")
+            data[pos:pos + BLOCK] = before
+            entry = next(entries, None)
+        digest.update(data)
+        report(progress, end, length, phase)
+    if digest.hexdigest() != baseline:
+        if recovery:
+            raise SafetyError("Card has changes outside this recovery journal, or is a different card. No recovery edits were written. Use a complete verified backup for broader recovery.")
+        raise SafetyError("The card differs from the editor's original image. No edits were written. Back up/open the current card before editing, or select the card matching this original.")
+
+
 def apply_changes_stream(target, capacity, identity, source, recovery_ready, progress=None,
                          cancel=None, guard=None, *, acknowledge_in_place=False,
-                         recovery=False, manifest=None):
+                         recovery=False, manifest=None, expected_journal=None):
     """Caller holds protected exclusive target access; durable journal already exists.
 
     recovery_ready must durably save the supplied manifest before returning.
@@ -109,11 +169,17 @@ def apply_changes_stream(target, capacity, identity, source, recovery_ready, pro
         raise SafetyError("Applying edits requires explicit acknowledgement of non-atomic in-place card changes.")
     if type(recovery) is not bool:
         raise SafetyError("Invalid recovery mode.")
+    if not os.fstat(source.fileno()).st_nlink:
+        raise SafetyError("The recovery journal has been deleted. No card edits were written.")
+    report(progress, 0, 0, "Flushing edit recovery journal before card access")
+    os.fsync(source.fileno())
     sf = fingerprint(source)
     length, count, baseline = journal_header(source, capacity)
     if not count:
         raise SafetyError("The edit journal contains no changes.")
     digest = hash_stream(source, sf[2], progress, cancel, "Verifying edit recovery journal")
+    if expected_journal is not None and digest != expected_journal:
+        raise SafetyError("The edit journal changed after preparation or review. No card edits were written.")
     if fingerprint(source) != sf:
         raise SafetyError("Edit journal changed during verification.")
     if recovery:
@@ -124,19 +190,7 @@ def apply_changes_stream(target, capacity, identity, source, recovery_ready, pro
     if hasattr(target, "invalidate"):
         report(progress, 0, 0, "Preparing independent current-card comparison")
         target.invalidate()
-    if not recovery and hash_stream(target, length, progress, cancel, "Comparing card with editor original", guard) != baseline:
-        raise SafetyError("The card differs from the editor's original image. No edits were written. Back up/open the current card before editing, or select the card matching this original.")
-    # Check every record before any write, also validating recovery mixtures.
-    for number, (offset, before, after) in enumerate(records(source, length, count), 1):
-        checkpoint(cancel)
-        if guard:
-            guard()
-        target.seek(offset)
-        current = read_exact(target, BLOCK)
-        if current != before and (not recovery or current != after):
-            raise SafetyError(f"Card sector {offset // BLOCK} differs from the journal. No edits were written.")
-        if number % 256 == 0 or number == count:
-            report(progress, number, count, "Checking affected card sectors")
+    compare_original(target, source, length, count, baseline, recovery, progress, cancel, guard)
     if fingerprint(source) != sf:
         raise SafetyError("Edit journal changed before writing.")
     receipt = {"schema": 1, "kind": "changed-sector-recovery", "status": "verified",

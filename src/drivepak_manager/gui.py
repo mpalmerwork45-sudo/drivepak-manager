@@ -1127,7 +1127,8 @@ class MainWindow(QMainWindow):
             def apply(progress, cancel):
                 if fingerprint(session.image.file) != state:
                     raise DrivePakError("Working image changed after review. No card edits started; prepare the changes again.")
-                return apply_card_changes(device, journal, str(journal) + ".json", progress, cancel)
+                return apply_card_changes(device, journal, str(journal) + ".json", progress, cancel,
+                                          expected_journal=info["journal_sha256"])
             def applied(receipt):
                 session.original, session.original_digest = baseline, info["modified_sha256"]
                 session.changes, session.saved_as = [], str(baseline)
@@ -1150,7 +1151,7 @@ class MainWindow(QMainWindow):
         if not device:
             return
         text = (f"RESTORE JOURNALED SECTORS ON: {device.path}\n{device.model} · {device.serial or device.wwn or device.diskseq}\nCapacity: {device.capacity:,} bytes\n\nJournal: {path}\n\n"
-                "Restore the before bytes of all journaled sectors. Other sectors are retained. Every affected sector must still match either its before or after bytes; other contents are rejected before writing. This is not a full-card restoration.\n\nRecovery is non-atomic; keep the journal and complete backups. Written sectors are independently read back.")
+                "Restore the before bytes of all journaled sectors. The complete image-sized card range is checked first: affected sectors must match their before or after bytes, and all other sectors must match the original. Later unrelated changes or unknown contents are rejected before writing. This is not a full-card restoration.\n\nRecovery is non-atomic; keep the journal and complete backups. Written sectors are independently read back.")
         if TextDialog("Final confirmation — recover card edits", text, self, f"Recover journaled sectors on {device.path}").exec() != QDialog.DialogCode.Accepted:
             return
         receipt_path = self.work_dir / f"{next(tempfile._get_candidate_names())}.edit-recovery.json"

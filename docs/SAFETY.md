@@ -103,8 +103,8 @@ reader media-change reporting still need spare-card hardware validation.
 
 The GUI and CLI remain unprivileged. A root-owned wrapper uses isolated system
 Python (`-I`) to run a fixed zipapp installed at a fixed path. The helper accepts
-only complete snapshots and checked image writes (backup-first or explicitly
-acknowledged direct mode). It does not run
+only complete snapshots, checked image writes (backup-first or explicitly
+acknowledged direct mode), and verified changed-sector apply/recovery. It does not run
 shell strings, arbitrary commands, Python supplied by the caller, or install
 actions. It does not open arbitrary output paths as root.
 
@@ -114,8 +114,14 @@ The caller passes already-open regular-file descriptors with SCM_RIGHTS. For a
 backup these are an empty new output owned by the caller and its independently
 reopened read-only descriptor. Backup-first writes use read-only source and
 recovery backup descriptors; direct writes use a single read-only source and an
-explicit boolean no-backup acknowledgement. An old installed helper is rejected
-before elevation for direct writes using its installed capability metadata.
+explicit boolean no-backup acknowledgement. Changed-sector operations require
+the reviewed journal digest and explicit in-place acknowledgement. Before writing,
+the helper requires the published recovery receipt through a separate read-only
+descriptor, checks its content against the verified journal/target, flushes it,
+and validates actual storage backing and current device use again. Receipt deletion
+or modification is detected during the operation. Unlinked source/recovery files
+are rejected. Old helpers lacking the audited card-edit protocol are rejected
+before elevation using installed capability metadata.
 Access modes, file type, identity and backing storage are
 validated. The only privileged writable object opened by the helper is the
 revalidated external block device. File locks and fingerprints protect the source
@@ -168,12 +174,15 @@ automatic destructive retry. The GUI event loop remains active while waiting.
 
 ## Manual recovery
 
-Version 1.1.0 also supports image-derived changed-sector updates. See
+Version 1.1.1 supports image-derived changed-sector updates with audited checks. See
 [CARD_EDITS.md](CARD_EDITS.md) for the full preconditions and recovery boundary.
 The existing image-sized card range must match the editor original. A durable
 before/after journal and verified receipt are required before any card edit.
 This is a partial recovery facility, not a substitute for a complete physical
-backup. Recovery rejects affected sectors matching neither known version.
+backup. Recovery rejects affected sectors matching neither known version, and
+also rejects unrelated changes anywhere in the original-image range. Reader
+identity and a few matching sectors cannot authorize recovery on their own.
+The [1.1.1 audit](AUDIT-1.1.1.md) records reproduced defects and their fixes.
 
 1. Keep the earlier verified backup and its manifest. Do not overwrite/delete it.
 2. Reconnect the spare card if needed and refresh/select it by identity. Do not

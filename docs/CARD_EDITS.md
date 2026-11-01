@@ -4,7 +4,8 @@ Use **Card → Apply image edits to card** after importing disks, editing BASIC
 files or changing partitions in the working image. It supports all existing
 image-editing operations, including partition creation/deletion/default changes.
 It writes only changed physical sectors and independently verifies those sectors.
-This is available in 1.1.0 and requires its updated privileged helper.
+Use version 1.1.1 and its updated privileged helper. Its safety audit tightened
+recovery correspondence and the saved-receipt checks; the 1.1.0 helper is rejected.
 
 This workflow continues to use a separate working image. It does **not** provide
 on-demand browsing of a physical card. **Back up card / Open card** gives you a
@@ -16,6 +17,8 @@ storage. Source images and earlier snapshots remain unchanged.
 2. Choose **Card → Apply image edits to card**, and explicitly select the card.
 3. The app verifies a new local image checkpoint and prepares a `.dpp` journal
    containing before/after bytes for every changed 512-byte physical sector.
+   It flushes and reopens the journal, compares saved header/record bytes against
+   what was generated, and binds the later write to that journal's SHA-256.
    This scans local images and requires room for another complete image plus
    journal data (at worst about twice the changed physical data).
 4. Review the exact destination, changes, sector/byte counts and journal path in
@@ -25,8 +28,11 @@ storage. Source images and earlier snapshots remain unchanged.
    A mismatch aborts before any card write; back up/open the current card if its
    contents legitimately changed. This comparison still takes a full read pass.
 6. Before writing, the helper verifies the journal, then waits for the desktop to
-   durably save its `.json` recovery receipt. Failure to save/acknowledge it means
-   no edits are written. Only then are the changed sectors written, synced in
+   durably save its `.json` recovery receipt. The desktop passes the published
+   receipt's read-only descriptor. The helper checks its exact content, ownership,
+   durability and actual independent storage, and rechecks current device use.
+   A success message alone is insufficient. Failure means no edits are written.
+   Only then are the changed sectors written, synced in
    bounded batches, independently read back and compared. Larger-card tails and
    every other sector remain untouched. New partitions do not expand themselves.
 
@@ -41,17 +47,26 @@ No physical-card behavior has been validated by the development tests.
 Choose **Card → Recover card edits**, select the `.dpp` file, explicitly select the
 card, then review the final confirmation. The matching original `.dpp.json`
 receipt is required. The helper verifies journal identity/digest, reader identity
-and capacity, and checks **all** affected sectors before writing any of them.
-Each must match either its before or after version. This handles a mixture from
-an interrupted update. It restores the before bytes and independently reads them
-back. The receipt from that recovery is saved separately in the working folder.
+and capacity, then reads the **complete image-sized card range** before writing.
+Each affected sector must match either its before or after version; every other
+byte in that range must match the original. The full checksum is compared by
+substituting known before bytes in a bounded memory buffer, without modifying the
+card during this check. This handles a mixture from an interrupted update while
+rejecting later unrelated edits or a different card in the same USB reader.
+It restores the before bytes and independently reads them back. The receipt from
+that recovery is saved separately in the working folder.
 
 An edit journal is a **partial recovery file, not a complete card backup**. A
-torn sector matching neither version, unrelated later edits in an affected sector,
-or a different target is rejected. Use a complete verified backup for broader
+torn sector matching neither version, unrelated later edits anywhere in the
+original-image range, or a different target is rejected. If you applied several
+successive journals, recover the most recent first. Bytes beyond a shorter
+original image are preserved, but are not covered by its recovery comparison.
+Use a complete verified backup for broader
 recovery. Interrupted updates are never automatically retried or rolled back on
 the physical card. Keep the journal, receipt and full backups; do not install a
 helper update or unplug the card during an operation.
+
+See [the 1.1.1 audit](AUDIT-1.1.1.md) for findings, tests and hardware limits.
 
 ## CLI
 

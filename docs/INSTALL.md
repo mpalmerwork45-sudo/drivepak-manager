@@ -9,8 +9,8 @@ image operations are portable Python; real card access is Linux-only.
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.1.0-linux.tar.gz -C /tmp
-cd /tmp/drivepak-manager-1.1.0-linux
+tar -xzf dist/drivepak-manager-1.1.1-linux.tar.gz -C /tmp
+cd /tmp/drivepak-manager-1.1.1-linux
 sha256sum -c SHA256SUMS
 ./install-user.sh
 ```
@@ -34,7 +34,7 @@ The app wheel, source archive and Linux tarball are under `dist/`; all build
 products are ignored by git. The tarball contains a wheel, desktop entry, SVG
 icon, helper zipapp/wrapper/policy, installers, licenses and documentation. Qt is
 not embedded in the application wheel/helper; runtime wheels are installed
-separately. The helper zipapp contains six fixed, standard-library-only modules.
+separately. The helper zipapp contains seven fixed, standard-library-only modules.
 No research downloads, games, firmware, backups or user images are packaged.
 
 The source checkout can also install its launcher manually using the template
@@ -68,7 +68,8 @@ The system Python must be 3.11+ as well. The wrapper, zipapp and every ancestor
 directory must be root-owned and not group/world writable. The GUI checks that
 before invoking pkexec. No user-supplied Python path is imported by the helper.
 
-Changed-sector apply/recovery requires the 1.1.0 helper. Install the current
+Changed-sector apply/recovery requires the 1.1.1 helper's audited receipt and
+recovery checks. Even the earlier 1.1.0 helper must be updated. Install the current
 distribution's helper after any active operation has finished; older helpers
 are rejected before device open for these operations. Updating the helper does
 not itself access a card. See [CARD_EDITS.md](CARD_EDITS.md) for the image-based

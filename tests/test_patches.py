@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,7 +28,8 @@ def edit(tmp_path):
     return old, new, card, journal, identity
 
 
-def apply(edit, *, recovery=False, progress=None, cancel=None, ready=None, wrapper=lambda x:x):
+def apply(edit, *, recovery=False, progress=None, cancel=None, ready=None, wrapper=lambda x:x,
+          guard=None, expected_journal=None):
     old, new, card, journal, identity = edit
     saved = Path(str(journal) + ".json")
     manifest = json.loads(saved.read_text()) if recovery else None
@@ -38,8 +40,9 @@ def apply(edit, *, recovery=False, progress=None, cancel=None, ready=None, wrapp
             assert card.read_bytes()[:4096] == old.read_bytes()
             write_json(saved, receipt)
     with card.open("r+b", buffering=0) as target, journal.open("rb", buffering=0) as source:
-        return apply_changes_stream(wrapper(target), 8192, identity, source, save, progress, cancel,
-                                    acknowledge_in_place=True, recovery=recovery, manifest=manifest)
+        return apply_changes_stream(wrapper(target), 8192, identity, source, save, progress, cancel, guard,
+                                    acknowledge_in_place=True, recovery=recovery, manifest=manifest,
+                                    expected_journal=expected_journal)
 
 
 def test_apply_and_recover_only_changed_physical_sectors(edit):
@@ -134,6 +137,164 @@ def test_recovery_rejects_foreign_target_and_torn_sector(edit):
     with pytest.raises(SafetyError, match="differs from the journal"):
         apply(edit, recovery=True)
     assert edit[2].read_bytes() == before
+
+
+def test_recovery_rejects_later_edits_outside_journal(edit):
+    apply(edit)
+    # A later edit can be filesystem metadata in a different sector. Restoring
+    # only the old journal would combine two incompatible card states.
+    with edit[2].open("r+b") as target:
+        target.seek(3072)
+        target.write(b"LATER FILESYSTEM METADATA")
+    before = edit[2].read_bytes()
+    with pytest.raises(SafetyError, match="outside.*journal"):
+        apply(edit, recovery=True)
+    assert edit[2].read_bytes() == before
+
+
+def test_recovery_rejects_other_card_in_same_reader(edit):
+    # USB serial numbers often identify the reader, not the inserted card.
+    edit[4].update(model="USB reader", serial="READER-1", transport="usb")
+    apply(edit)
+    edit[4]["diskseq"] = "replacement"
+    with edit[2].open("r+b") as target:
+        target.seek(2560)
+        target.write(b"OTHER CARD: same edited sector contents, different rest")
+    before = edit[2].read_bytes()
+    with pytest.raises(SafetyError, match="outside.*journal"):
+        apply(edit, recovery=True)
+    assert edit[2].read_bytes() == before
+
+
+def test_journal_creation_verifies_persisted_record_bytes(tmp_path, monkeypatch):
+    import drivepak_manager.patches as patches
+    original, modified, journal = [tmp_path / n for n in ("original.img", "modified.img", "edits.dpp")]
+    original.write_bytes(bytes(1024))
+    modified.write_bytes(b"x" * 512 + bytes(512))
+    real_write = patches.write_all
+    def corrupt_record(file, data):
+        if len(data) == RECORD_SIZE:
+            data = bytearray(data)
+            data[-1] ^= 1
+        real_write(file, data)
+    monkeypatch.setattr(patches, "write_all", corrupt_record)
+    with pytest.raises(DrivePakError, match="journal.*verification"):
+        prepare_changes(original, modified, journal)
+    assert not journal.exists()
+
+
+def test_reviewed_journal_cannot_be_replaced_with_different_edits(edit):
+    journal = edit[3]
+    reviewed = hashlib.sha256(journal.read_bytes()).hexdigest()
+    raw = bytearray(journal.read_bytes())
+    raw[HEADER.size + 8 + 512 + 9] ^= 0x33  # valid record, different after bytes
+    journal.chmod(0o600)
+    journal.write_bytes(raw)
+    before = edit[2].read_bytes()
+    with pytest.raises(SafetyError, match="journal changed after preparation or review"):
+        apply(edit, expected_journal=reviewed)
+    assert edit[2].read_bytes() == before and not Path(str(journal) + ".json").exists()
+
+
+class FragmentedIO:
+    def __init__(self, file):
+        self.file = file
+    def __getattr__(self, name):
+        return getattr(self.file, name)
+    def read(self, size):
+        return self.file.read(min(size, 73))
+    def write(self, data):
+        return self.file.write(data[:37])
+
+
+def test_short_successful_reads_and_writes_preserve_every_byte(edit):
+    original = edit[2].read_bytes()
+    assert apply(edit, wrapper=FragmentedIO)["status"] == "verified"
+    assert edit[2].read_bytes() == edit[1].read_bytes() + original[4096:]
+    assert apply(edit, recovery=True, wrapper=FragmentedIO)["status"] == "verified"
+    assert edit[2].read_bytes() == original
+
+
+@pytest.mark.parametrize("fault", ["eof", "read-error", "zero-write", "partial-write"])
+def test_io_faults_never_report_edits_verified(edit, fault):
+    original = edit[2].read_bytes()
+    class Fault(FragmentedIO):
+        def read(self, size):
+            if fault == "eof":
+                return b""
+            if fault == "read-error":
+                raise OSError("Simulated unplug during read")
+            return super().read(size)
+        def write(self, data):
+            if fault == "zero-write":
+                return 0
+            self.file.write(data[:19])  # stops halfway through the four changed bytes
+            raise OSError("Simulated unplug after a partial sector write")
+    with pytest.raises((DrivePakError, OSError)) as failure:
+        apply(edit, wrapper=Fault)
+    receipt = Path(str(edit[3]) + ".json")
+    if fault in ("eof", "read-error"):
+        assert not receipt.exists() and edit[2].read_bytes() == original
+    else:
+        assert "PHYSICAL EDITS INCOMPLETE OR UNVERIFIED" in str(failure.value)
+        assert receipt.exists()
+        if fault == "partial-write":
+            torn = edit[2].read_bytes()
+            with pytest.raises(SafetyError, match="differs from the journal"):
+                apply(edit, recovery=True)
+            assert edit[2].read_bytes() == torn
+        else:
+            assert edit[2].read_bytes() == original
+
+
+def test_target_flush_failure_keeps_journal_and_can_recover(edit, monkeypatch):
+    real_sync = os.fsync
+    target_fd = None
+    def capture(file):
+        nonlocal target_fd
+        target_fd = file.fileno()
+        return file
+    def fail_sync(fd):
+        if fd == target_fd:
+            raise OSError("Simulated device flush failure")
+        real_sync(fd)
+    monkeypatch.setattr(os, "fsync", fail_sync)
+    before = edit[2].read_bytes()
+    with pytest.raises(DrivePakError, match="INCOMPLETE OR UNVERIFIED.*flush failure"):
+        apply(edit, wrapper=capture)
+    assert Path(str(edit[3]) + ".json").is_file()
+    monkeypatch.setattr(os, "fsync", real_sync)
+    assert apply(edit, recovery=True)["status"] == "verified"
+    assert edit[2].read_bytes() == before
+
+
+def test_guard_rejects_replacement_after_recovery_checkpoint(edit):
+    replaced = False
+    def guard():
+        if replaced:
+            raise SafetyError("Simulated device replacement")
+    def ready(receipt):
+        nonlocal replaced
+        write_json(str(edit[3]) + ".json", receipt)
+        replaced = True
+    before = edit[2].read_bytes()
+    with pytest.raises(SafetyError, match="device replacement"):
+        apply(edit, guard=guard, ready=ready)
+    assert edit[2].read_bytes() == before
+
+
+@pytest.mark.parametrize("fault", ["space", "fsync"])
+def test_failed_journal_durability_prevents_publication(edit, tmp_path, monkeypatch, fault):
+    import drivepak_manager.patches as patches
+    def failure(*args):
+        raise OSError("Simulated journal storage failure")
+    monkeypatch.setattr(patches if fault == "space" else patches.os,
+                        "need_space" if fault == "space" else "fsync", failure)
+    output = tmp_path / "failed.dpp"
+    before = edit[2].read_bytes()
+    with pytest.raises(OSError, match="journal storage failure"):
+        prepare_changes(edit[0], edit[1], output)
+    assert not output.exists() and edit[2].read_bytes() == before
 
 
 def test_unacknowledged_edit_and_modified_original_rejected(edit, tmp_path):

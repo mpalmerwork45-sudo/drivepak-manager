@@ -14,7 +14,7 @@ from .filesystems.os9 import OS9
 from .image import Image, RAW_DISK_SIZES, create_blank
 from .linux import backup_card, write_card, write_card_direct, apply_card_changes
 from .patches import prepare_changes
-from .streams import copy_verified
+from .streams import copy_verified, hash_file
 
 
 def encode(value):
@@ -157,6 +157,7 @@ def execute(a):
         return prepare_changes(a.original, a.modified, a.journal, progress=progress)
     if cmd in ("apply-edits", "recover-edits"):
         d = selected_device(a.device)
+        journal_digest = hash_file(a.journal, progress)
         if a.confirm_device is not None:
             if a.confirm_device != d.path:
                 raise SafetyError("--confirm-device must exactly equal the selected destination.")
@@ -166,7 +167,8 @@ def execute(a):
             print(f"{cmd}: {d.path} · {d.model} · {d.capacity:,} bytes · {d.serial or d.diskseq}\nJournal: {a.journal}\nNon-atomic in-place update. Recovery covers journaled sectors only, not a complete physical backup.", file=sys.stderr)
             if input(f"Type {d.path} to write changed sectors and verify: ") != d.path:
                 raise SafetyError("Card edit was not confirmed.")
-        return apply_card_changes(d, a.journal, a.receipt, progress, recovery=cmd == "recover-edits")
+        return apply_card_changes(d, a.journal, a.receipt, progress, recovery=cmd == "recover-edits",
+                                  expected_journal=journal_digest)
     if cmd == "simulate-apply-edits":
         return SimulatedDevice(Path(a.device_file)).apply_changes(a.journal, a.receipt, progress, recovery=a.recover)
     if cmd == "backup-card":

@@ -1,6 +1,6 @@
 # DrivePak Manager
 
-**Version 1.1.0 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
+**Version 1.1.1 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
 
 A native Python/PySide6 desktop utility for Roger Taylor's **CoCoNet MicroSD
 Drive Pak** proprietary card layout. Supports working images, Disk BASIC disk
@@ -114,7 +114,7 @@ To enable card access directly from a source installation:
 
 ```bash
 ./tools/build_linux.sh
-sudo ./dist/drivepak-manager-1.1.0-linux/install-helper.sh
+sudo ./dist/drivepak-manager-1.1.1-linux/install-helper.sh
 ```
 
 The helper is installed once, then updated when a release requires it. Device
@@ -125,8 +125,8 @@ To produce the Linux distribution, desktop launcher and helper:
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.1.0-linux.tar.gz -C /tmp
-/tmp/drivepak-manager-1.1.0-linux/install-user.sh
+tar -xzf dist/drivepak-manager-1.1.1-linux.tar.gz -C /tmp
+/tmp/drivepak-manager-1.1.1-linux/install-user.sh
 ```
 
 The user installer creates a private virtualenv, an Applications menu entry and
@@ -139,7 +139,7 @@ offline wheelhouse installation and uninstall commands.
 this administrator installation yourself:
 
 ```bash
-sudo /tmp/drivepak-manager-1.1.0-linux/install-helper.sh
+sudo /tmp/drivepak-manager-1.1.1-linux/install-helper.sh
 ```
 
 This installs only the constrained helper and its authentication policy. It does
@@ -365,18 +365,19 @@ DRIVEPAK_REFERENCE=1 .venv/bin/python -m pytest -q -m reference
 ```
 
 Normal tests are offline and use small, independently constructed fixtures.
-Reference integration is opt-in and needs about 8 GiB of temporary free space.
+Reference integration is opt-in and needs about 12 GiB of temporary free space.
 Downloads are streamed into `data/reference/`, safely extracted and locally
 hashed; [provenance.json](docs/provenance.json) records actual sizes and SHA-256.
 Those hashes establish reproducibility, not independent publisher authentication.
 The 2 GB-labelled reference contains **1,866,210,304** image bytes.
 
-Recorded 1.1.0 validation: **129 offline tests passed and 2 reference integration
-tests passed**, with desktop startup and read-only selector inspection. This
+Recorded 1.1.1 validation: **157 offline tests passed and 3 reference integration
+tests passed**, with desktop startup inspection using a synthetic image. This
 includes a synthetic T&D slot-31 import that preserves defaults, padding and
 unrelated data. Automated results are not physical-hardware proof; complete
 readback and CoCoNet loading validation still need confirmation. See the
-[spare-card checklist](docs/TESTING.md).
+[spare-card checklist](docs/TESTING.md). The [card-editing safety audit](docs/AUDIT-1.1.1.md)
+records the defects found and fixed; install the 1.1.1 helper before card edits.
 
 No account, network service, database, cloud dependency, or telemetry is used by
 the application. Network access is used only for explicit dependency/reference

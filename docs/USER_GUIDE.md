@@ -91,7 +91,9 @@ checks the full image-sized card range matches the editor's original, writes
 only changed sectors and verifies them independently. Partition/default edits
 and disk/file changes are included. It still uses a working image and takes a
 full comparison read; it avoids another whole-card write. **Recover card edits**
-restores journaled before sectors when their contents still match either version.
+restores journaled before sectors when their contents still match either version
+and the rest of the original-image range remains unchanged. Later unrelated
+edits are rejected; recover successive journals in reverse order.
 This partial recovery journal is not a complete backup. See [CARD_EDITS.md](CARD_EDITS.md).
 
 **Save image as** writes and verifies a new file. **Review changes** shows paths

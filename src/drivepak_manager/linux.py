@@ -16,7 +16,7 @@ from .backup import verify_backup
 from . import __version__
 from .devices import validate
 from .errors import Cancelled, SafetyError, DrivePakError
-from .streams import atomic_output, checkpoint, distinct, need_space, report, write_json
+from .streams import atomic_output, checkpoint, distinct, hash_file, need_space, report, sync_dir, write_json
 
 HELPER = Path("/usr/local/libexec/drivepak-manager-helper")
 
@@ -34,7 +34,7 @@ def helper_installed():
 
 
 def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, *, acknowledge_no_backup=False,
-           acknowledge_in_place=False, recovery=False, recovery_manifest_path=None):
+           acknowledge_in_place=False, recovery=False, recovery_manifest_path=None, expected_journal=None):
     if not helper_installed():
         raise SafetyError("Linux helper is not installed/trusted. Build with tools/build_linux.sh, then install the generated helper using the documented administrator command. The GUI must remain unprivileged.")
     if operation in ("write-direct", "write-patch"):
@@ -48,6 +48,8 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, 
                 capability = json.loads(archive.read(info)) if info.file_size <= 4096 else None
                 if not isinstance(capability, dict) or capability.get("protocol") != 1 or operation not in capability.get("operations", []):
                     raise ValueError("direct operation unavailable")
+                if operation == "write-patch" and capability.get("card_edits_version") != 2:
+                    raise ValueError("audited receipt and recovery checks unavailable")
         except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile) as e:
             raise SafetyError(f"The installed helper needs updating for this card operation. Run sudo ./install-helper.sh from drivepak-manager-{__version__}-linux, then retry. No device was opened.") from e
     with tempfile.TemporaryDirectory(prefix="dpm-") as directory:
@@ -82,7 +84,7 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, 
                     if operation == "write-direct":
                         request["acknowledge_no_backup"] = True
                     if operation == "write-patch":
-                        request.update(acknowledge_in_place=True, recovery=recovery)
+                        request.update(acknowledge_in_place=True, recovery=recovery, journal_sha256=expected_journal)
                     connection.sendmsg([json.dumps(request).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))])
                     sent_cancel = False
                     while True:
@@ -104,7 +106,11 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, 
                                 raise SafetyError("Unexpected recovery checkpoint from helper.")
                             checkpoint(cancel)
                             write_json(recovery_manifest_path, event["manifest"])
-                            connection.send(b"recovery-saved")
+                            receipt_fd = os.open(recovery_manifest_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                            try:
+                                connection.sendmsg([b"recovery-saved"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [receipt_fd]))])
+                            finally:
+                                os.close(receipt_fd)
                         elif event["event"] == "error":
                             raise DrivePakError(event["message"])
                         elif event["event"] == "result":
@@ -153,7 +159,7 @@ def write_card_direct(device, source, progress=None, cancel=None, *, acknowledge
                       acknowledge_no_backup=True)
 
 
-def apply_card_changes(device, journal, receipt, progress=None, cancel=None, *, recovery=False):
+def apply_card_changes(device, journal, receipt, progress=None, cancel=None, *, recovery=False, expected_journal=None):
     """Apply/recover a durable journal; the helper checks the target before writing."""
     journal, receipt = Path(journal), Path(receipt)
     distinct(journal, receipt)
@@ -162,6 +168,8 @@ def apply_card_changes(device, journal, receipt, progress=None, cancel=None, *, 
     validate(device.identity, [journal, receipt.parent])
     if receipt.exists():
         raise SafetyError("Recovery receipt already exists; choose a new destination.")
+    if expected_journal is None:
+        expected_journal = hash_file(journal, progress, cancel)
     manifest = None
     if recovery:
         saved = Path(str(journal) + ".json")
@@ -169,5 +177,10 @@ def apply_card_changes(device, journal, receipt, progress=None, cancel=None, *, 
             raise SafetyError("Missing or oversized edit recovery receipt.")
         manifest = json.loads(saved.read_text())
     with journal.open("rb", buffering=0) as source:
+        # CLI journals may have been copied by another program. Persist both
+        # file and directory before the privileged operation can rely on them.
+        os.fsync(source.fileno())
+        sync_dir(journal.resolve().parent)
         return invoke("write-patch", device.identity, [source.fileno()], manifest, progress, cancel,
-                      acknowledge_in_place=True, recovery=recovery, recovery_manifest_path=receipt)
+                      acknowledge_in_place=True, recovery=recovery, recovery_manifest_path=receipt,
+                      expected_journal=expected_journal)

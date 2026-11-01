@@ -6,8 +6,10 @@ enumeration was exercised. The actual PySide6 Widgets interface was launched on
 the X desktop, browsed and visually inspected. The helper was staged under `/tmp`,
 with no system installation or configuration change.
 
-Recorded results (2026-10-31): **129 offline tests passed, 2 reference tests
-skipped by default; both opt-in reference integration tests passed**.
+Recorded results (2026-11-01, version 1.1.1): **157 offline tests passed;
+3 opt-in reference integration tests passed** (skipped by default). The
+card-editing audit used no real card access. Findings and fixes are recorded in
+[AUDIT-1.1.1.md](AUDIT-1.1.1.md).
 
 ## Reproduce
 
@@ -33,17 +35,22 @@ IPC or run the offline suite outside that sandbox. This does not authorize real
 card I/O. Headless GUI tests use Qt's offscreen plugin and substitute native
 dialogs with controlled responses.
 
-Full-image integration is opt-in. Keep about 8 GiB free for extraction and
+Full-image integration is opt-in. Keep about 12 GiB free for extraction and
 disposable working/saved images. `pytest --basetemp` can select another test
 filesystem. The 2 GB-labelled image actually contains 1,866,210,304 bytes. Its
 original is read-only and SHA-256 checked before/after integration. The tests
 copy/save it unchanged, round-trip a full slot, check three independently
 calculated directories and compare every byte outside a renamed directory field.
+A third test applies that directory edit through a journal to a disposable,
+full-size simulated card, checks the complete result, recovers it, and requires
+the original whole-image SHA-256. The independent physical write offset is
+`(1024 + 308) * 512`; exactly one 512-byte sector is written.
 
-Measured with `/usr/bin/time -v`, that complete reference run took about 13
-seconds and used **85,064 KiB peak resident memory** (about 83 MiB). Copy/hash
-buffers are 4 MiB; payload transfers use bounded sector batches. These are
-observations from this desktop, not performance guarantees for other systems.
+The three-test reference run took about 26 seconds on this desktop. Copy/hash
+buffers are 4 MiB; payload transfers and journal comparisons use bounded batches.
+This timing does not predict USB reader performance. Pytest may retain prior
+temporary runs; allow additional space for those or use a dedicated test temp
+directory.
 
 ## Coverage
 
@@ -74,6 +81,13 @@ mixed before/after recovery, foreign targets and unknown/torn sector rejection.
 GUI and CLI flows run through preparation, partial application and recovery; the
 real helper SCM_RIGHTS test exercises its durable-receipt handshake with fake
 block open/stat/ioctl adapters. No actual card is opened by these tests.
+
+The 1.1.1 audit adds tests that first reproduced stale/foreign recovery acceptance,
+saved journal corruption, and absent/empty backing mappings. It also checks
+changed journal data after review, receipt descriptor/content/publication/storage
+checks, deleted files, short successful I/O, failed partial writes and flushes,
+replacement at the checkpoint, and the real client receipt-transfer socket loop
+with authentication substituted by a local test thread.
 
 ## Installation verification
 

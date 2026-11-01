@@ -168,3 +168,20 @@ def test_raw_device_use_inspection(tmp_path, monkeypatch):
     original = os.stat
     monkeypatch.setattr(os, "stat", lambda p, *a, **kw: SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=os.makedev(8, 16)) if str(p) == str(fd) else original(p, *a, **kw))
     assert open_device_users({"8:16"}, procroot=tmp_path) == ["other-writer (PID 999999)"]
+
+
+@pytest.mark.parametrize("response", ['{}', '{"filesystems": []}'])
+def test_unknown_empty_backing_mapping_fails_closed(tmp_path, monkeypatch, response):
+    import drivepak_manager.devices as devices
+    monkeypatch.setattr(devices, "command", lambda args: response)
+    with pytest.raises(SafetyError, match="backing"):
+        devices.path_devices(tmp_path, Topology([], tmp_path / "sys"))
+
+
+def test_deleted_source_or_journal_descriptor_rejected(tmp_path):
+    journal = tmp_path / "removed.dpp"
+    journal.write_bytes(b"saved recovery data")
+    with journal.open("rb") as source:
+        journal.unlink()
+        with pytest.raises(SafetyError, match="deleted"):
+            check_fd(source.fileno(), os.getuid())

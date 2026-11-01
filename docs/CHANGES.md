@@ -1,5 +1,29 @@
 # Changes
 
+## 1.1.1
+
+Safety audit of changed-sector editing and recovery; see [AUDIT-1.1.1.md](AUDIT-1.1.1.md).
+
+* Recovery now checks every byte in the original-image range, allowing only the
+  journal's known before/after mixtures. It rejects unrelated later changes and
+  another card sharing the USB reader identity and affected sector contents.
+* Generated journals are flushed, reopened and compared with the intended
+  header/records. The prepared checksum is carried through review to the helper,
+  preventing different journal contents from being written after review.
+* Before card edits, the helper verifies the actual published recovery receipt
+  descriptor, contents, durability and independent backing storage. It rechecks
+  target use status then, and monitors receipt stability throughout the write.
+  Plain success acknowledgements and deleted source/recovery files are rejected.
+* Empty filesystem mapping results now fail closed instead of implying independent
+  storage. Unknown backing cannot authorize card access.
+* Added failure-injection and actual Unix-socket protocol tests. No physical card
+  was accessed, and no system helper installation was performed during the audit.
+
+Install the **1.1.1 helper** before applying or recovering card edits. Older
+helpers are rejected before elevation. Existing DPEDIT01 journals remain readable,
+subject to the stricter recovery correspondence check. Full backups are still
+needed for torn sectors or broader recovery; physical writes remain non-atomic.
+
 ## 1.1.0
 
 * Added **Apply image edits to card** for all existing image mutations. It prepares
