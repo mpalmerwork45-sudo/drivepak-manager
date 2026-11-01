@@ -1,4 +1,4 @@
-include LICENSE THIRD_PARTY.md README.md requirements*.lock AGENTS.md .editorconfig .gitattributes .gitignore
+include LICENSE THIRD_PARTY.md README.md requirements*.lock AGENTS.md .editorconfig .gitattributes .gitignore start-drivepak.sh
 recursive-include src *.py
 recursive-include docs *.md *.json
 recursive-include tests *.py

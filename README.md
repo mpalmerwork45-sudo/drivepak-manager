@@ -19,11 +19,14 @@ If this checkout is already installed, open Konsole and run:
 
 ```bash
 cd ~/CoCoPak/drivepak-manager
-.venv/bin/drivepak-manager
+./start-drivepak.sh
 ```
 
-The `.venv` command selects the project's Python environment even if your
-terminal also displays a Conda `(base)` prompt. Run the GUI as your normal user.
+You can also run `start-drivepak.sh` from Dolphin; choose to execute it if
+prompted. The script finds the project and its Python environment even if your
+terminal displays a Conda `(base)` prompt or you start it from another directory.
+It gives setup instructions if the environment is missing. Run it as your normal
+user; installing the card helper remains a separate, one-time step.
 If a card write is running, wait for **readback verification** before closing,
 restarting or disconnecting the card. The copying phase alone is not the final
 success indication.
@@ -102,7 +105,7 @@ Use Python 3.11 or newer. From this project directory:
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.lock
 .venv/bin/python -m pip install --no-build-isolation --no-deps -e .
-.venv/bin/drivepak-manager
+./start-drivepak.sh
 ```
 
 On a minimal Kubuntu installation, Qt may need `libxcb-cursor0` and the normal

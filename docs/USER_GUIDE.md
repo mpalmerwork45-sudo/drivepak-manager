@@ -1,5 +1,13 @@
 # Using DrivePak Manager
 
+## Start the app
+
+In the project directory, run `./start-drivepak.sh`, or execute that script
+from Dolphin. It uses the project's own Python environment and can be started
+from any working directory. If the environment is missing, it explains how to
+set it up. Run the app as your normal user; card access uses the separately
+installed helper described in [INSTALL.md](INSTALL.md).
+
 ## Start with a copy
 
 **Open image** accepts a raw `.img` and creates a separate verified working file.
