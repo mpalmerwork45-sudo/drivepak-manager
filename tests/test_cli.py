@@ -1,3 +1,5 @@
+import pytest
+
 from drivepak_manager.cli import main
 
 
@@ -97,3 +99,35 @@ def test_cli_rejects_mixed_basic_and_os9_metadata_before_output(card, tmp_path, 
     assert "Disk BASIC" in capsys.readouterr().err and not output.exists()
     assert main(["insert", str(card), str(output), "--partition", "1", "--disk", "0", str(source), "--attributes", "0x1b"]) == 2
     assert "OS-9" in capsys.readouterr().err and not output.exists()
+
+
+def test_cli_full_write_binds_source_to_final_confirmation(tmp_path, monkeypatch, capsys):
+    import builtins
+    from types import SimpleNamespace
+    import drivepak_manager.cli as cli
+    import drivepak_manager.linux as linux
+    source = tmp_path / "SOURCE.img"
+    source.write_bytes(b"a" * 512)
+    device = SimpleNamespace(path="/dev/simulated", capacity=4096, model="Simulated reader", serial="TEST", diskseq="1", identity={"simulated": True})
+    monkeypatch.setattr(cli, "selected_device", lambda path: device)
+    monkeypatch.setattr(linux, "validate", lambda *a, **kw: device)
+    monkeypatch.setattr(linux, "invoke", lambda *a, **kw: pytest.fail("Changed reviewed source reached privileged access"))
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    def confirm(prompt):
+        source.write_bytes(b"b" * 512)
+        return device.path
+    monkeypatch.setattr(builtins, "input", confirm)
+    assert cli.main(["write-card", device.path, str(source), "--no-backup"]) == 2
+    assert "source image changed after review" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("size", [0, 513, 8192])
+def test_cli_full_write_checks_reviewed_range_before_confirmation(tmp_path, monkeypatch, size):
+    from types import SimpleNamespace
+    import drivepak_manager.cli as cli
+    source = tmp_path / "INVALID.img"
+    source.write_bytes(bytes(size))
+    device = SimpleNamespace(path="/dev/simulated", capacity=4096)
+    monkeypatch.setattr(cli, "selected_device", lambda path: device)
+    monkeypatch.setattr(cli, "write_card_direct", lambda *a, **kw: pytest.fail("Invalid source reached card writer"))
+    assert cli.main(["write-card", device.path, str(source), "--no-backup", "--confirm-device", device.path]) == 2

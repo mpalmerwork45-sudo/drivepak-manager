@@ -56,6 +56,11 @@ and backups are never overwritten by save/export. The app never automatically
 deletes old working images or any recovery backup. Work-image edits use an undo
 journal for exceptions/cancellation; originals remain the recovery point if the
 application or machine crashes.
+Undo records use unbuffered exact writes before changing image bytes. If rollback
+itself fails, the session is marked unusable: further editing, saving, exporting
+or card writing from that working image is blocked. Discard it and reopen the
+unchanged original or a verified backup; do not manually reuse a failed working
+file. Discard verifies the newly copied original as well as checking it beforehand.
 
 Choose enough space for the original/backup, a working image, saved results,
 fresh destination snapshot, and mutation undo data. A 2 GB card session can need
@@ -79,7 +84,10 @@ devices are rejected, as are holders, mounted devices and read-only devices.
 Existing raw block-device opens by other processes are checked as well; the
 privileged endpoint requires process descriptor inspection to succeed.
 Backup, working and source filesystem backing is checked through actual open
-descriptors as well as paths. Unknown local backing fails closed. Parent/sibling
+descriptors as well as paths. Unknown backing fails closed; network filesystems
+are rejected because a remote or loopback export might itself use the target.
+Select an existing backup folder on persistent independent local storage.
+Parent/sibling
 relationships are conservatively protected; an apparently separate partition on
 the same target disk is not independent backup storage.
 
@@ -95,6 +103,8 @@ There is no remembered write destination. Missing disk sequence disables card
 access. Changes after selection are rejected. The helper revalidates everything
 after authentication, opens with `O_EXCL|O_NOFOLLOW`, holds an exclusive flock,
 checks the descriptor's actual block identity, then rechecks topology and mounts.
+Full writes repeat the complete use/topology check after all preflight hashes,
+immediately before writing. Deliberate unmounts also revalidate before each volume.
 Identity/sequence/capacity are checked between chunks. Removal/replacement or
 identity change aborts. The system's own exclusive block-claim behavior and card
 reader media-change reporting still need spare-card hardware validation.
@@ -121,7 +131,10 @@ descriptor, checks its content against the verified journal/target, flushes it,
 and validates actual storage backing and current device use again. Receipt deletion
 or modification is detected during the operation. Unlinked source/recovery files
 are rejected. Old helpers lacking the audited card-edit protocol are rejected
-before elevation using installed capability metadata.
+before elevation using installed capability metadata. Full-image writes require
+the 1.2.1 helper's reviewed-source and final-use checks. The confirmed source's
+device/inode/size/timestamps are checked against the actual transferred descriptor
+after authentication and monitored during the operation.
 Access modes, file type, identity and backing storage are
 validated. The only privileged writable object opened by the helper is the
 revalidated external block device. File locks and fingerprints protect the source
@@ -183,6 +196,8 @@ backup. Recovery rejects affected sectors matching neither known version, and
 also rejects unrelated changes anywhere in the original-image range. Reader
 identity and a few matching sectors cannot authorize recovery on their own.
 The [1.1.1 audit](AUDIT-1.1.1.md) records reproduced defects and their fixes.
+The [1.2.1 audit](AUDIT-1.2.1.md) covers full writes, device use checks and
+filesystem/image mutation failures.
 
 1. Keep the earlier verified backup and its manifest. Do not overwrite/delete it.
 2. Reconnect the spare card if needed and refresh/select it by identity. Do not

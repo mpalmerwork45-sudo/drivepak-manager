@@ -532,6 +532,119 @@ def test_gui_os9_subdirectory_editing_stays_in_directory(qtbot, card, os9_nested
     window.close()
 
 
+def test_gui_quarantines_failed_rollback_until_discard(qtbot, card, tmp_path, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    window.open_path(card)
+    settle(qtbot, window)
+    window.session.changed("Pending edit")
+    poisoned = window.session.image
+    poisoned.failure_reason = "Injected rollback failure; keep original backup."
+    monkeypatch.setattr(poisoned, "read", lambda *a, **kw: pytest.fail("GUI parsed an unusable image"))
+    errors = []
+    monkeypatch.setattr(window, "fail", errors.append)
+    monkeypatch.setattr(window, "choose_device", lambda *a: pytest.fail("Unusable image reached device selection"))
+    window.update_actions()
+    window.refresh()
+    for key in ("save", "apply", "write", "insert", "import_disk", "create_part", "extract"):
+        assert not window.actions[key].isEnabled()
+    assert window.actions["discard"].isEnabled() and window.actions["open"].isEnabled()
+    assert "Original preserved" in window.state_label.text()
+    window.apply_changes_action()
+    window.write_action()
+    assert len(errors) == 2 and all("rollback failure" in error for error in errors)
+    window.actions["discard"].trigger()
+    settle(qtbot, window)
+    assert window.session.image.failure_reason is None
+    assert window.session.working.read_bytes() == card.read_bytes()
+    assert window.actions["write"].isEnabled()
+    window.close()
+
+
+def test_gui_review_pin_survives_backup_reverification(qtbot, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import drivepak_manager.gui as gui
+    import drivepak_manager.linux as linux
+    source, backup = tmp_path / "SOURCE.img", tmp_path / "BACKUP.img"
+    source.write_bytes(b"a" * 512)
+    device = SimpleNamespace(path="/dev/simulated", capacity=4096, model="Simulated reader", serial="TEST", wwn="", diskseq="1", identity={"simulated": True})
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    errors = []
+    monkeypatch.setattr(window, "fail", errors.append)
+    monkeypatch.setattr(window, "choose_device", lambda *a: device)
+    monkeypatch.setattr(window, "backup_destination", lambda *a, **kw: str(backup))
+    def choose_source(dialog):
+        dialog.source.setText(str(source))
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(gui.WriteOptionsDialog, "exec", choose_source)
+    monkeypatch.setattr(gui.TextDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    def snapshot(device, destination, work, progress, cancel):
+        backup.write_bytes(b"original card".ljust(4096, b"\0"))
+        return {"status": "verified"}
+    monkeypatch.setattr(gui, "backup_card", snapshot)
+    monkeypatch.setattr(linux, "validate", lambda *a, **kw: device)
+    def verify(*args):
+        source.write_bytes(b"changed".ljust(512, b"\0"))
+        return {"status": "verified"}
+    monkeypatch.setattr(linux, "verify_backup", verify)
+    monkeypatch.setattr(linux, "invoke", lambda *a, **kw: pytest.fail("Changed reviewed source reached card access"))
+    window.actions["write"].trigger()
+    qtbot.waitUntil(lambda: bool(errors), timeout=15000)
+    settle(qtbot, window)
+    assert "source image changed after review" in errors[0]
+    assert backup.read_bytes() == b"original card".ljust(4096, b"\0")
+    window.close()
+
+
+def test_gui_recovery_rejects_substituted_valid_journal_and_receipt(qtbot, tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+    import drivepak_manager.gui as gui
+    from drivepak_manager.backup import SimulatedDevice
+    from drivepak_manager.patches import prepare_changes
+    original, other, modified, target = [tmp_path / name for name in ("original.img", "other.img", "modified.img", "card.bin")]
+    original.write_bytes(b"a" * 512 + bytes(3584))
+    other.write_bytes(b"b" * 512 + bytes(3584))
+    modified.write_bytes(b"c" * 512 + bytes(3584))
+    target.write_bytes(original.read_bytes())
+    selected, replacement = tmp_path / "selected.dpp", tmp_path / "replacement.dpp"
+    prepare_changes(original, modified, selected)
+    prepare_changes(other, modified, replacement)
+    sim = SimulatedDevice(target)
+    sim.apply_changes(selected, str(selected) + ".json")
+    # Both journals have legitimate receipts for this same simulated target,
+    # but their recoveries restore different before data from the same state.
+    target.write_bytes(other.read_bytes())
+    sim.apply_changes(replacement, str(replacement) + ".json")
+    before = target.read_bytes()
+    device = SimpleNamespace(path=str(target), capacity=4096, model="Simulated reader", serial="TEST", wwn="", diskseq="1", identity=sim.identity)
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    errors = []
+    monkeypatch.setattr(window, "fail", errors.append)
+    monkeypatch.setattr(window, "choose_device", lambda *a: device)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **kw: (str(selected), ""))
+    def confirm(dialog):
+        if dialog.windowTitle() == "Final confirmation — recover card edits":
+            selected.chmod(0o600)
+            selected.write_bytes(replacement.read_bytes())
+            Path(str(selected) + ".json").write_bytes(Path(str(replacement) + ".json").read_bytes())
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(gui.TextDialog, "exec", confirm)
+    monkeypatch.setattr(gui, "apply_card_changes", lambda device, journal, receipt, progress, cancel, **kw:
+                        sim.apply_changes(journal, receipt, progress, cancel, **kw))
+    window.actions["recover_edits"].trigger()
+    qtbot.waitUntil(lambda: bool(errors), timeout=15000)
+    settle(qtbot, window)
+    assert "journal changed after preparation or review" in errors[0]
+    assert target.read_bytes() == before
+    window.close()
+
+
 def test_gui_backup_edit_write_full_workflow_with_simulated_card(qtbot, card, tmp_path, monkeypatch):
     from types import SimpleNamespace
     import drivepak_manager.gui as gui
@@ -549,7 +662,12 @@ def test_gui_backup_edit_write_full_workflow_with_simulated_card(qtbot, card, tm
     destinations = iter(backups)
     monkeypatch.setattr(window, "backup_destination", lambda device, **kw: str(next(destinations)))
     monkeypatch.setattr(gui, "backup_card", lambda d, out, work, progress, cancel: sim.backup(out, progress, cancel))
-    monkeypatch.setattr(gui, "write_card", lambda d, source, backup, progress, cancel: sim.write(source, backup, progress, cancel))
+    def simulated_write(d, source, backup, progress, cancel, *, expected_source=None):
+        from drivepak_manager.streams import fingerprint
+        with open(source, "rb") as selected:
+            assert fingerprint(selected) == expected_source
+        return sim.write(source, backup, progress, cancel)
+    monkeypatch.setattr(gui, "write_card", simulated_write)
     monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
     errors = []
     monkeypatch.setattr(window, "fail", errors.append)
@@ -602,7 +720,12 @@ def test_direct_file_to_card_has_no_save_dialog_and_keeps_source(qtbot, tmp_path
             confirmations.append(body)
         return QDialog.DialogCode.Accepted
     monkeypatch.setattr(gui.TextDialog, "exec", confirm)
-    monkeypatch.setattr(gui, "write_card_direct", lambda d, source, progress, cancel, **kw: sim.write_direct(source, progress, cancel, **kw))
+    def simulated_direct(d, source, progress, cancel, *, expected_source=None, **kw):
+        from drivepak_manager.streams import fingerprint
+        with open(source, "rb") as selected:
+            assert fingerprint(selected) == expected_source
+        return sim.write_direct(source, progress, cancel, **kw)
+    monkeypatch.setattr(gui, "write_card_direct", simulated_direct)
     errors = []
     monkeypatch.setattr(window, "fail", errors.append)
     window.actions["write"].trigger()

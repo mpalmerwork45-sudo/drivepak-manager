@@ -6,10 +6,11 @@ enumeration was exercised. The actual PySide6 Widgets interface was launched on
 the X desktop, browsed and visually inspected. The helper was staged under `/tmp`,
 with no system installation or configuration change.
 
-Recorded results (2026-11-06, version 1.2.0): **209 offline tests passed;
+Recorded results (2026-11-06, version 1.2.1): **246 offline tests passed;
 4 opt-in reference integration tests passed** (skipped by default). The
-card-editing audit used no real card access. Findings and fixes are recorded in
-[AUDIT-1.1.1.md](AUDIT-1.1.1.md).
+offline run took 3.69 seconds and the reference run took 30.87 seconds. The
+audits used no real card access. Findings and fixes are recorded in
+[AUDIT-1.2.1.md](AUDIT-1.2.1.md) and [AUDIT-1.1.1.md](AUDIT-1.1.1.md).
 
 ## Reproduce
 
@@ -51,7 +52,7 @@ The fourth test inserts, renames, replaces, extracts and deletes a generated
 binary in the reference NitrOS-9 `/CMDS` directory. It compares the complete
 image outside allowed allocation/directory metadata and free payload sectors,
 including all physical padding and other partitions, and rechecks the immutable
-original hash. The four-test reference run took about 32 seconds. Copy/hash
+original hash. The four-test reference run took about 31 seconds. Copy/hash
 buffers are 4 MiB; payload transfers and journal comparisons use bounded batches.
 This timing does not predict USB reader performance. Pytest may retain prior
 temporary runs; allow additional space for those or use a dedicated test temp
@@ -111,6 +112,14 @@ ToolShed is an optional research tool, never a normal-test dependency or a bundl
 component. This check used files exclusively and does not validate CoCo hardware.
 
 ## Installation verification
+
+Version 1.2.1 adds 37 offline regressions for stale allocation, concurrent edits,
+bounded import reads, actual opened descriptor types, whole-volume substitution,
+undo storage exhaustion and rollback failure, discard source replacement, device
+use aliases and late-use checks, unsafe backing and unmount races, reviewed source
+binding, GUI recovery-journal substitution and unusable-image controls. The helper
+tests need local Unix sockets; sandbox-denied socket tests were rerun with local
+IPC permitted and passed. Hardware access remains mocked.
 
 The Linux package was installed offline into a fresh temporary virtualenv using
 the four pinned cached Qt wheels. Application/bin/desktop/icon/doc paths were

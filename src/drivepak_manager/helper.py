@@ -124,7 +124,7 @@ def serve(sock, uid):
         if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC) or len(msg) > 32768:
             raise SafetyError("Oversized helper request.")
         request = json.loads(msg)
-        if set(request) - {"operation", "expected", "manifest", "acknowledge_no_backup", "acknowledge_in_place", "recovery", "journal_sha256"}:
+        if set(request) - {"operation", "expected", "manifest", "acknowledge_no_backup", "acknowledge_in_place", "recovery", "journal_sha256", "source_fingerprint"}:
             raise SafetyError("Unknown helper request field.")
         op = request["operation"]
         if op not in ("backup", "write", "write-direct", "write-patch") or len(descriptors) != (1 if op in ("write-direct", "write-patch") else 2):
@@ -141,6 +141,12 @@ def serve(sock, uid):
                 raise SafetyError("The reviewed journal SHA-256 is required before card access.")
         one = descriptors[0]
         s1 = check_fd(one, uid, writable=op == "backup")
+        if op in ("write", "write-direct"):
+            reviewed = request.get("source_fingerprint")
+            if (not isinstance(reviewed, list) or len(reviewed) != 5 or
+                    any(type(value) is not int for value in reviewed) or
+                    tuple(reviewed) != fingerprint_from_fd(one)):
+                raise SafetyError("Source image differs from the reviewed file or changed during authentication. No card write started.")
         # Backup readback is the same file, so do not take a second flock which
         # would conflict with its independent exclusive output descriptor.
         if not direct and not patch:
@@ -170,6 +176,8 @@ def serve(sock, uid):
         recovery_receipt = None
 
         def guard():
+            if op in ("write", "write-direct") and fingerprint_from_fd(one) != tuple(reviewed):
+                raise SafetyError("Source image changed after review or during card access.")
             current = os.stat(device.path, follow_symlinks=False)
             capacity = struct.unpack("Q", fcntl.ioctl(fd, BLKGETSIZE64, bytes(8)))[0]
             seq = Path(f"/sys/dev/block/{device.major_minor}/diskseq").read_text().strip()
@@ -187,6 +195,13 @@ def serve(sock, uid):
 
         def progress(done, total, phase):
             send(sock, {"event": "progress", "done": done, "total": total, "phase": phase})
+
+        def prewrite():
+            # Source and full-card checks can take many minutes. Recheck use,
+            # system protection and source/backup backing immediately before
+            # the first destructive write, after all of those reads complete.
+            validate(expected, storage_paths=[pwd.getpwuid(uid).pw_dir], storage_fds=descriptors)
+            guard()
 
         with os.fdopen(os.dup(fd), "rb" if op == "backup" else "r+b", buffering=0) as target:
             # Flush/invalidate block cache before the independent device pass.
@@ -206,7 +221,7 @@ def serve(sock, uid):
             if direct:
                 with os.fdopen(os.dup(one), "rb", buffering=0) as source:
                     result = direct_write_stream(target, device.capacity, source, progress, cancel, guard,
-                                                 acknowledge_no_backup=True)
+                                                 acknowledge_no_backup=True, prewrite=prewrite)
                 send(sock, {"event": "result", "result": result})
                 return
             with os.fdopen(os.dup(one), "r+b" if op == "backup" else "rb", buffering=0) as first, os.fdopen(os.dup(two), "rb", buffering=0) as second:
@@ -216,7 +231,7 @@ def serve(sock, uid):
                         raise SafetyError("Not enough free space on backup storage.")
                     result = snapshot_stream(target, device.capacity, device.identity, first, second, progress, cancel, guard)
                 else:
-                    result = restore_stream(target, device.capacity, device.identity, first, second, request.get("manifest"), progress, cancel, guard)
+                    result = restore_stream(target, device.capacity, device.identity, first, second, request.get("manifest"), progress, cancel, guard, prewrite=prewrite)
         send(sock, {"event": "result", "result": result})
     finally:
         for fd in [*opened, *descriptors]:

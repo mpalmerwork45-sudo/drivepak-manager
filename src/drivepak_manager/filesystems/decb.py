@@ -6,12 +6,14 @@ mutation is limited to validated standard metadata; remaining payload is retaine
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import stat
 
 from ..errors import FormatError, SafetyError
 from ..format import SLOT_BYTES
-from ..streams import atomic_output, write_all, write_json, distinct
+from ..streams import atomic_output, write_all, write_json, distinct, fingerprint, read_exact
 
 FAT_OFFSET = (17 * 18 + 1) * 256
 DIR_OFFSET = (17 * 18 + 2) * 256
@@ -135,17 +137,29 @@ class DECB:
                           "notice": "Bytes extracted verbatim; no text or binary header conversion."})
 
     def _mutable(self):
+        state = fingerprint(self.view.image.file)
         self.view.image.layout().require_editable()
+        # Another operation or filesystem object may have changed allocation.
+        # Never allocate/free a granule using this object's old snapshot.
+        self.__init__(self.view)
         if self.issues:
             raise FormatError("File editing disabled: " + "; ".join(self.issues[:5]))
+        if fingerprint(self.view.image.file) != state:
+            raise SafetyError("Working image changed during Disk BASIC validation. No file edits were written.")
+        return state
 
     def insert(self, source, name=None, file_type=2, ascii_flag=0, replace=False):
-        self._mutable()
+        state = self._mutable()
         source = Path(source)
         distinct(self.view.image.path, source)
-        if not source.is_file() or source.stat().st_size > 68 * GRANULE_BYTES:
-            raise FormatError("File is too large for a standard Disk BASIC filesystem.")
-        data = source.read_bytes()
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+        with os.fdopen(os.open(source, flags), "rb", buffering=0) as inp:
+            initial = fingerprint(inp)
+            if not stat.S_ISREG(os.fstat(inp.fileno()).st_mode) or initial[2] > 68 * GRANULE_BYTES:
+                raise FormatError("Choose a regular file fitting the standard Disk BASIC filesystem.")
+            data = read_exact(inp, initial[2])
+            if fingerprint(inp) != initial:
+                raise SafetyError("Disk BASIC import source changed while reading. No file edits were written.")
         reserved = None
         sidecar = Path(str(source) + ".drivepak.json")
         if sidecar.exists():
@@ -187,6 +201,8 @@ class DECB:
         last_bytes = ((len(data) - 1) % 256 + 1) if data else 0
         entry = encoded + bytes([file_type, ascii_flag, free[0]]) + last_bytes.to_bytes(2, "big") + reserved
         with self.view.image.transaction():
+            if fingerprint(self.view.image.file) != state:
+                raise SafetyError("Working image changed while planning Disk BASIC insertion. Reopen the file list before editing.")
             for i, g in enumerate(free):
                 # Only actual file bytes; retain unused sectors and slack bytes.
                 piece = data[i * GRANULE_BYTES:(i + 1) * GRANULE_BYTES]
@@ -198,22 +214,31 @@ class DECB:
                 self.view.write(DIR_OFFSET + (idx + 1) * 32, b"\xff")
             self.view.write(DIR_OFFSET + idx * 32, entry)
             DECB(self.view)._mutable()
+        self.__init__(self.view)
 
     def rename(self, name, new_name):
-        self._mutable()
+        state = self._mutable()
         f = self.get(name)
         encoded = disk_name(new_name)
         if any(x.index != f.index and x.name.upper() == new_name.upper() for x in self.files):
             raise FormatError("A file with the new name already exists.")
         with self.view.image.transaction():
+            if fingerprint(self.view.image.file) != state:
+                raise SafetyError("Working image changed while planning Disk BASIC rename.")
             self.view.write(DIR_OFFSET + f.index * 32, encoded)
+            DECB(self.view)._mutable()
+        self.__init__(self.view)
 
     def delete(self, name):
-        self._mutable()
+        state = self._mutable()
         f = self.get(name)
         fat = bytearray(self.fat)
         for g in f.chain:
             fat[g] = 255
         with self.view.image.transaction():
+            if fingerprint(self.view.image.file) != state:
+                raise SafetyError("Working image changed while planning Disk BASIC deletion.")
             self.view.write(FAT_OFFSET, fat)
             self.view.write(DIR_OFFSET + f.index * 32, b"\0")
+            DECB(self.view)._mutable()
+        self.__init__(self.view)

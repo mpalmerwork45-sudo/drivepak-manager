@@ -1,5 +1,26 @@
 # Changes
 
+## 1.2.1
+
+Safety audit of full writes, backups and image/filesystem mutations; see
+[AUDIT-1.2.1.md](AUDIT-1.2.1.md). Install this release's helper before full writes.
+
+* Bind confirmed full-write sources to their actual descriptors through elevation;
+  repeat device-use and storage checks after preflight, before writing.
+  Bind GUI recovery to the journal selected before its final confirmation.
+* Detect raw block opens through aliases outside `/dev`, revalidate every deliberate
+  unmount, and reject network backing whose independence cannot be established.
+* Require an existing validated backup folder before creating output files.
+* Write image undo data without buffering before mutations; block further use of
+  a working image if rollback fails. Keep the current working copy when an original
+  changes during discard.
+* Refresh Disk BASIC allocation state before edits, bind whole OS-9 imports to
+  their validated sources, and keep disk reads bounded when a source grows.
+  Refuse stale Disk BASIC/OS-9 allocation plans when another edit changes the
+  working image during preparation; validate opened source descriptor types.
+* Added corruption/race/failure regressions using disposable files and simulated
+  devices. No physical-card operation or system helper installation was performed.
+
 ## 1.2.0
 
 * Added individual OS-9 file insertion, explicit replacement, rename and deletion

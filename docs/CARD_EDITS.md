@@ -4,8 +4,9 @@ Use **Card → Apply image edits to card** after importing disks, editing BASIC
 files or changing partitions in the working image. It supports all existing
 image-editing operations, including partition creation/deletion/default changes.
 It writes only changed physical sectors and independently verifies those sectors.
-Use version 1.2.0 with the 1.1.1 or newer privileged helper. The 1.1.1 safety audit tightened
-recovery correspondence and the saved-receipt checks; the 1.1.0 helper is rejected.
+Use the 1.2.1 app and helper together. The earlier 1.1.1 safety audit tightened
+recovery correspondence and saved-receipt checks; the 1.2.1 audit also hardens
+device protection and full-image writing. Existing journals remain compatible.
 
 This workflow continues to use a separate working image. It does **not** provide
 on-demand browsing of a physical card. **Back up card / Open card** gives you a

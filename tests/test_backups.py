@@ -402,3 +402,28 @@ def test_card_batch_flush_error_is_incomplete_and_preserves_recovery(tmp_path, m
     assert source.read_bytes() == payload
     if not direct:
         assert recovery.read_bytes() == before and verify_backup(recovery)["status"] == "verified"
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_full_write_rechecks_use_after_long_preflight_before_writing(device, tmp_path, direct):
+    from drivepak_manager.backup import direct_write_stream
+    source, recovery = tmp_path / "source.img", tmp_path / "recovery.img"
+    source.write_bytes(b"X" * 1024)
+    manifest = device.backup(recovery)
+    before = device.path.read_bytes()
+    phases = []
+    def prewrite():
+        assert "Checking source image" in phases
+        if not direct:
+            assert "Checking backup against current target" in phases
+        raise SafetyError("Card acquired a new raw-device user during preflight")
+    with device.path.open("r+b", buffering=0) as target, source.open("rb", buffering=0) as src, recovery.open("rb", buffering=0) as back:
+        progress = lambda d, n, phase: phases.append(phase)
+        with pytest.raises(SafetyError, match="new raw-device user"):
+            if direct:
+                direct_write_stream(target, device.capacity, src, progress, acknowledge_no_backup=True, prewrite=prewrite)
+            else:
+                restore_stream(target, device.capacity, device.identity, src, back, manifest, progress, prewrite=prewrite)
+    assert "Writing card" not in phases
+    assert device.path.read_bytes() == before
+    assert recovery.read_bytes() == before

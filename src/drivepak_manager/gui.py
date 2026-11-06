@@ -28,7 +28,7 @@ from .format import BLOCK, DEFAULTS, SLOT_BYTES
 from .image import RAW_DISK_SIZES, Session, create_blank, read_disk_file
 from .linux import backup_card, write_card, write_card_direct, apply_card_changes
 from .patches import prepare_changes
-from .streams import checkpoint, report, write_json, distinct, copy_verified, fingerprint
+from .streams import checkpoint, report, write_json, distinct, copy_verified, fingerprint, hash_file
 
 
 def human(n):
@@ -538,6 +538,22 @@ class MainWindow(QMainWindow):
             self.actions["import_disk"].setToolTip("Wait for the current operation to finish.")
             return
         loaded = self.session is not None
+        image_problem = self.session.image.failure_reason if loaded else None
+        if image_problem:
+            for key, action in self.actions.items():
+                action.setEnabled(key in {"open", "new", "backup", "verify", "discard", "review", "preferences", "guide"})
+            self.tree.setEnabled(False)
+            self.files.setEnabled(False)
+            self.search_all.setEnabled(False)
+            self.search.setEnabled(False)
+            self.up.setEnabled(False)
+            self.layout_notice.setText("Working image requires recovery: " + image_problem)
+            self.layout_notice.setVisible(True)
+            self.state_label.setText(f"Working image is unusable. Original preserved: {self.session.original}\n{image_problem}")
+            self.directory_status.setText("Discard changes to recreate the working image from its original, or open a verified image.")
+            return
+        self.tree.setEnabled(True)
+        self.files.setEnabled(True)
         layout = self.session.image.layout() if loaded else None
         valid = bool(layout and layout.editable)
         known = bool(layout and layout.addressing_known)
@@ -585,6 +601,9 @@ class MainWindow(QMainWindow):
         self.up.setEnabled(os9 and self.os9_path != "/" and not busy)
 
     def refresh(self, preserve=None, directory="/"):
+        if self.session and self.session.image.failure_reason:
+            self.update_actions()
+            return
         old = preserve or self.current
         self.tree.blockSignals(True)
         self.tree.clear()
@@ -1186,6 +1205,11 @@ class MainWindow(QMainWindow):
         if self.worker or not self.session or not self.session.changes:
             return
         session = self.session
+        try:
+            session.image.require_usable()
+        except DrivePakError as e:
+            self.fail(str(e))
+            return
         device = self.choose_device("Select destination for changed sectors only")
         if not device:
             return
@@ -1195,6 +1219,7 @@ class MainWindow(QMainWindow):
         journal = work / f"{name}.card-edits.dpp"
         def prepare(progress, cancel):
             from .devices import validate
+            session.image.require_usable()
             validate(device.identity, [session.original, session.working, work])
             state = fingerprint(session.image.file)
             copy_verified(session.working, baseline, progress, cancel)
@@ -1213,6 +1238,7 @@ class MainWindow(QMainWindow):
             if TextDialog("Final confirmation — apply image edits", text, self, f"Apply {info['sectors']:,} changed sectors to {device.path}").exec() != QDialog.DialogCode.Accepted:
                 return
             def apply(progress, cancel):
+                session.image.require_usable()
                 if fingerprint(session.image.file) != state:
                     raise DrivePakError("Working image changed after review. No card edits started; prepare the changes again.")
                 return apply_card_changes(device, journal, str(journal) + ".json", progress, cancel,
@@ -1238,20 +1264,29 @@ class MainWindow(QMainWindow):
         device = self.choose_device("Select exact card for edit recovery")
         if not device:
             return
-        text = (f"RESTORE JOURNALED SECTORS ON: {device.path}\n{device.model} · {device.serial or device.wwn or device.diskseq}\nCapacity: {device.capacity:,} bytes\n\nJournal: {path}\n\n"
-                "Restore the before bytes of all journaled sectors. The complete image-sized card range is checked first: affected sectors must match their before or after bytes, and all other sectors must match the original. Later unrelated changes or unknown contents are rejected before writing. This is not a full-card restoration.\n\nRecovery is non-atomic; keep the journal and complete backups. Written sectors are independently read back.")
-        if TextDialog("Final confirmation — recover card edits", text, self, f"Recover journaled sectors on {device.path}").exec() != QDialog.DialogCode.Accepted:
-            return
         receipt_path = self.work_dir / f"{next(tempfile._get_candidate_names())}.edit-recovery.json"
         def done(result):
             self.written_status = f"Card edit recovery readback verified: {device.path}"
             self.refresh()
             TextDialog("Card edit recovery verified", json.dumps(result, indent=2), self).exec()
-        self.run_task("Restoring and verifying journaled card sectors", lambda p, c: apply_card_changes(device, path, receipt_path, p, c, recovery=True), done)
+        def ready(journal_digest):
+            text = (f"RESTORE JOURNALED SECTORS ON: {device.path}\n{device.model} · {device.serial or device.wwn or device.diskseq}\nCapacity: {device.capacity:,} bytes\n\nJournal: {path}\n\n"
+                    "Restore the before bytes of all journaled sectors. The complete image-sized card range is checked first: affected sectors must match their before or after bytes, and all other sectors must match the original. Later unrelated changes or unknown contents are rejected before writing. This is not a full-card restoration.\n\nRecovery is non-atomic; keep the journal and complete backups. Written sectors are independently read back.")
+            if TextDialog("Final confirmation — recover card edits", text, self, f"Recover journaled sectors on {device.path}").exec() != QDialog.DialogCode.Accepted:
+                return
+            self.run_task("Restoring and verifying journaled card sectors", lambda p, c: apply_card_changes(
+                device, path, receipt_path, p, c, recovery=True, expected_journal=journal_digest), done)
+        self.run_task("Checking selected recovery journal before review", lambda p, c: hash_file(path, p, c), ready)
 
     def write_action(self):
         if self.worker:
             return
+        if self.session:
+            try:
+                self.session.image.require_usable()
+            except DrivePakError as e:
+                self.fail(str(e))
+                return
         default = ""
         if self.session:
             default = self.session.saved_as or (self.session.working if self.session.changes else self.session.original)
@@ -1291,12 +1326,15 @@ class MainWindow(QMainWindow):
                 return
 
             def write(progress, cancel):
+                if self.session:
+                    self.session.image.require_usable()
                 current = source.stat()
                 if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns, current.st_ctime_ns) != selected_identity:
                     raise DrivePakError("The source image changed after selection. Select it again and review the new write range. No card write started.")
                 if destination:
-                    return write_card(device, source, destination, progress, cancel)
-                return write_card_direct(device, source, progress, cancel, acknowledge_no_backup=True)
+                    return write_card(device, source, destination, progress, cancel, expected_source=selected_identity)
+                return write_card_direct(device, source, progress, cancel, acknowledge_no_backup=True,
+                                         expected_source=selected_identity)
 
             def written(result):
                 self.written_status = f"Card write readback verified: {source.name} → {device.path} at {result['verified_utc']}"

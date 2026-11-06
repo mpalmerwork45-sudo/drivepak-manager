@@ -128,8 +128,8 @@ def open_device_users(keys, strict=False, procroot=Path("/proc")):
             descriptors = list((process / "fd").iterdir())
             for entry in descriptors:
                 try:
-                    if not os.readlink(entry).startswith("/dev/"):
-                        continue
+                    # Block device nodes may be bind-mounted or created under
+                    # another path. Inspect descriptor type and rdev, not name.
                     s = os.stat(entry)
                 except FileNotFoundError:
                     continue
@@ -169,7 +169,7 @@ def path_devices(path, topo=None):
         elif fs.get("fstype") in ("tmpfs", "ramfs"):
             raise SafetyError("Volatile RAM-backed storage cannot hold a durable card recovery snapshot. Choose persistent independent storage.")
         elif fs.get("fstype") in ("nfs", "nfs4", "cifs"):
-            continue
+            raise SafetyError(f"Cannot establish independent storage backing {p}: network filesystems can be served from the target card. Choose persistent local storage with known backing devices.")
         else:
             raise SafetyError(f"Cannot establish storage backing {p}; use a local independent filesystem with known backing devices.")
     return keys
@@ -259,11 +259,18 @@ def validate(expected, storage_paths=(), storage_fds=()):
 
 def unmount(device):
     """Explicit UI action only. UDisks supplies per-session authentication."""
-    current = next((d for d in discover() if d.identity == device.identity), None)
+    topo = topology()
+    current = next((d for d in discover(topo) if d.identity == device.identity), None)
     if not current or current.problems:
         raise SafetyError("Cannot unmount a protected or changed device.")
-    topo = topology()
-    for key in topo.family(device.major_minor):
+    for key in sorted(topo.family(device.major_minor)):
+        # A different medium or a protected mount may appear after selecting
+        # the device, or between unmounting two volumes. Never rely on the
+        # picker result paired with a newer, unvalidated topology.
+        topo = topology()
+        current = next((d for d in discover(topo) if d.identity == device.identity), None)
+        if not current or current.problems or key not in topo.family(device.major_minor):
+            raise SafetyError("Cannot continue unmounting: the device became protected, changed, or was replaced.")
         row = topo.rows.get(key)
         if row and any(row.get("mountpoints") or []):
             command(["/usr/bin/udisksctl", "unmount", "--block-device", row.get("path") or row["name"]])

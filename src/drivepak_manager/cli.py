@@ -3,6 +3,7 @@ import argparse
 from dataclasses import asdict, is_dataclass
 import json
 from pathlib import Path
+import stat
 import sys
 
 from . import __version__
@@ -186,6 +187,10 @@ def execute(a):
         return backup_card(selected_device(a.device), a.output, progress=progress)
     if cmd == "write-card":
         d = selected_device(a.device)
+        selected = Path(a.image).stat()
+        selected_identity = (selected.st_dev, selected.st_ino, selected.st_size, selected.st_mtime_ns, selected.st_ctime_ns)
+        if not stat.S_ISREG(selected.st_mode) or not 0 < selected.st_size <= d.capacity or selected.st_size % 512:
+            raise SafetyError("Select a nonempty regular image with complete 512-byte sectors fitting the selected card. No truncation is allowed.")
         if a.confirm_device is not None:
             if a.confirm_device != d.path:
                 raise SafetyError("--confirm-device must exactly equal the selected destination.")
@@ -193,10 +198,11 @@ def execute(a):
             if not sys.stdin.isatty():
                 raise SafetyError("Noninteractive physical writes require --confirm-device with the exact destination path.")
             policy = "DIRECT WRITE: no recovery backup will be created." if a.no_backup else f"Verified current-target backup: {a.backup}"
-            print(f"READ image: {a.image}\nWRITE card: {d.path} · {d.model} · {d.capacity:,} bytes · {d.serial or d.diskseq}\n{policy}\nBytes beyond a shorter image are preserved. Interrupted writes can leave incomplete contents.", file=sys.stderr)
+            print(f"READ image: {a.image}\nWRITE card: {d.path} · {d.model} · {d.capacity:,} bytes · {d.serial or d.diskseq}\n{policy}\nWrite range: {selected.st_size:,} bytes; larger-card tail: {d.capacity - selected.st_size:,} bytes, preserved. Interrupted writes can leave incomplete contents.", file=sys.stderr)
             if input(f"Type {d.path} to write and verify: ") != d.path:
                 raise SafetyError("Write was not confirmed.")
-        return write_card_direct(d, a.image, progress, acknowledge_no_backup=True) if a.no_backup else write_card(d, a.image, a.backup, progress)
+        return (write_card_direct(d, a.image, progress, acknowledge_no_backup=True, expected_source=selected_identity)
+                if a.no_backup else write_card(d, a.image, a.backup, progress, expected_source=selected_identity))
     if cmd == "simulate-backup":
         return SimulatedDevice(Path(a.device_file)).backup(a.output, progress)
     if cmd == "simulate-write":

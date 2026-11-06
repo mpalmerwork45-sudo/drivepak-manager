@@ -68,7 +68,7 @@ def verify_backup(path, progress=None, cancel=None):
         raise SafetyError(f"Invalid backup manifest: {e}") from e
 
 
-def restore_stream(target, capacity, identity, source, backup, manifest, progress=None, cancel=None, guard=None):
+def restore_stream(target, capacity, identity, source, backup, manifest, progress=None, cancel=None, guard=None, *, prewrite=None):
     """Never writes until target's complete current contents match the backup."""
     require_capacity(capacity)
     if not isinstance(manifest, dict) or manifest.get("kind") != "complete-physical-backup" or manifest.get("status") != "verified" or manifest.get("schema") != 1:
@@ -96,10 +96,10 @@ def restore_stream(target, capacity, identity, source, backup, manifest, progres
         raise SafetyError("Target no longer matches the backup. Create and verify a fresh complete backup before writing.")
     if fingerprint(backup) != bf or fingerprint(source) != sf:
         raise SafetyError("Source or recovery backup changed before writing.")
-    return _write_verified(target, capacity, source, sf, source_digest, progress, cancel, guard, backup, bf)
+    return _write_verified(target, capacity, source, sf, source_digest, progress, cancel, guard, backup, bf, prewrite=prewrite)
 
 
-def direct_write_stream(target, capacity, source, progress=None, cancel=None, guard=None, *, acknowledge_no_backup=False):
+def direct_write_stream(target, capacity, source, progress=None, cancel=None, guard=None, *, acknowledge_no_backup=False, prewrite=None):
     """Explicit opt-in: no snapshot, same protected write and independent readback."""
     if acknowledge_no_backup is not True:
         raise SafetyError("Direct writing requires explicit acknowledgement that no recovery backup will be created.")
@@ -113,13 +113,20 @@ def direct_write_stream(target, capacity, source, progress=None, cancel=None, gu
     digest = hash_stream(source, sf[2], progress, cancel, "Checking source image")
     if fingerprint(source) != sf:
         raise SafetyError("Source image changed before writing.")
-    return _write_verified(target, capacity, source, sf, digest, progress, cancel, guard)
+    return _write_verified(target, capacity, source, sf, digest, progress, cancel, guard, prewrite=prewrite)
 
 
-def _write_verified(target, capacity, source, sf, source_digest, progress, cancel, guard, backup=None, bf=None):
+def _write_verified(target, capacity, source, sf, source_digest, progress, cancel, guard, backup=None, bf=None, *, prewrite=None):
     checkpoint(cancel)
     if guard:
         guard()
+    # Source/backup/current-card hashing can take minutes. Recheck full device
+    # use/topology after those reads, immediately before any destructive I/O.
+    if prewrite:
+        prewrite()
+    checkpoint(cancel)
+    if fingerprint(source) != sf or (backup is not None and fingerprint(backup) != bf):
+        raise SafetyError("Source image or recovery backup changed before writing.")
     started = False
     synced = 0
 

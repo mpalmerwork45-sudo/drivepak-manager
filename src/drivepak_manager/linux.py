@@ -16,7 +16,7 @@ from .backup import verify_backup
 from . import __version__
 from .devices import validate
 from .errors import Cancelled, SafetyError, DrivePakError
-from .streams import atomic_output, checkpoint, distinct, hash_file, need_space, report, sync_dir, write_json
+from .streams import atomic_output, checkpoint, distinct, fingerprint, hash_file, need_space, report, sync_dir, write_json
 
 HELPER = Path("/usr/local/libexec/drivepak-manager-helper")
 
@@ -34,10 +34,11 @@ def helper_installed():
 
 
 def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, *, acknowledge_no_backup=False,
-           acknowledge_in_place=False, recovery=False, recovery_manifest_path=None, expected_journal=None):
+           acknowledge_in_place=False, recovery=False, recovery_manifest_path=None, expected_journal=None,
+           expected_source=None):
     if not helper_installed():
         raise SafetyError("Linux helper is not installed/trusted. Build with tools/build_linux.sh, then install the generated helper using the documented administrator command. The GUI must remain unprivileged.")
-    if operation in ("write-direct", "write-patch"):
+    if operation in ("write", "write-direct", "write-patch"):
         if operation == "write-direct" and acknowledge_no_backup is not True:
             raise SafetyError("Direct writing requires explicit acknowledgement that no backup will be created.")
         if operation == "write-patch" and (acknowledge_in_place is not True or not recovery_manifest_path):
@@ -50,6 +51,8 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, 
                     raise ValueError("direct operation unavailable")
                 if operation == "write-patch" and capability.get("card_edits_version") != 2:
                     raise ValueError("audited receipt and recovery checks unavailable")
+                if operation in ("write", "write-direct") and capability.get("full_write_version") != 2:
+                    raise ValueError("reviewed-source and final-use checks unavailable")
         except (OSError, KeyError, TypeError, ValueError, zipfile.BadZipFile) as e:
             raise SafetyError(f"The installed helper needs updating for this card operation. Run sudo ./install-helper.sh from drivepak-manager-{__version__}-linux, then retry. No device was opened.") from e
     with tempfile.TemporaryDirectory(prefix="dpm-") as directory:
@@ -83,6 +86,8 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, 
                         request["manifest"] = manifest
                     if operation == "write-direct":
                         request["acknowledge_no_backup"] = True
+                    if operation in ("write", "write-direct"):
+                        request["source_fingerprint"] = expected_source
                     if operation == "write-patch":
                         request.update(acknowledge_in_place=True, recovery=recovery, journal_sha256=expected_journal)
                     connection.sendmsg([json.dumps(request).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fds))])
@@ -130,7 +135,10 @@ def invoke(operation, expected, fds, manifest=None, progress=None, cancel=None, 
 
 def backup_card(device, destination, working_storage=None, progress=None, cancel=None):
     destination = Path(destination).absolute()
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Never create even a directory on storage that has not been validated as
+    # independent of the selected target. File dialogs select existing folders.
+    if not destination.parent.is_dir():
+        raise SafetyError("The backup folder does not exist. Select an existing folder on independent storage.")
     validate(device.identity, [destination.parent, *([working_storage] if working_storage else [])])
     if Path(str(destination) + ".json").exists():
         raise SafetyError("A backup manifest already exists at that name. Choose a new backup filename.")
@@ -142,21 +150,28 @@ def backup_card(device, destination, working_storage=None, progress=None, cancel
     return m
 
 
-def write_card(device, source, recovery_backup, progress=None, cancel=None):
+def write_card(device, source, recovery_backup, progress=None, cancel=None, *, expected_source=None):
     distinct(source, recovery_backup)
     validate(device.identity, [source, recovery_backup])
     manifest = verify_backup(recovery_backup, progress, cancel)
     with open(source, "rb", buffering=0) as src, open(recovery_backup, "rb", buffering=0) as backup:
-        return invoke("write", device.identity, [src.fileno(), backup.fileno()], manifest, progress, cancel)
+        current = fingerprint(src)
+        if expected_source is not None and tuple(expected_source) != current:
+            raise SafetyError("The source image changed after review. No card write started; select it again.")
+        return invoke("write", device.identity, [src.fileno(), backup.fileno()], manifest, progress, cancel,
+                      expected_source=current)
 
 
-def write_card_direct(device, source, progress=None, cancel=None, *, acknowledge_no_backup=False):
+def write_card_direct(device, source, progress=None, cancel=None, *, acknowledge_no_backup=False, expected_source=None):
     if acknowledge_no_backup is not True:
         raise SafetyError("Direct writing requires explicit acknowledgement that no recovery backup will be created.")
     validate(device.identity, [source])
     with open(source, "rb", buffering=0) as src:
+        current = fingerprint(src)
+        if expected_source is not None and tuple(expected_source) != current:
+            raise SafetyError("The source image changed after review. No card write started; select it again.")
         return invoke("write-direct", device.identity, [src.fileno()], progress=progress, cancel=cancel,
-                      acknowledge_no_backup=True)
+                      acknowledge_no_backup=True, expected_source=current)
 
 
 def apply_card_changes(device, journal, receipt, progress=None, cancel=None, *, recovery=False, expected_journal=None):

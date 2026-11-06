@@ -1,7 +1,7 @@
 import json
 import pytest
 
-from drivepak_manager.errors import FormatError
+from drivepak_manager.errors import FormatError, SafetyError
 from drivepak_manager.image import Image
 from drivepak_manager.filesystems.decb import DECB
 
@@ -97,3 +97,81 @@ def test_orphan_disables_mutation_but_allows_browsing(card, tmp_path):
         assert fs.files == [] and fs.issues
         with pytest.raises(FormatError, match="owner"):
             fs.insert(p)
+
+
+def test_reused_filesystem_object_never_overwrites_new_files(card, tmp_path):
+    first, second = tmp_path / "FIRST.BIN", tmp_path / "SECOND.BIN"
+    first.write_bytes(b"first file\x00\xff")
+    second.write_bytes(b"second file\r\n")
+    with Image(card, True) as image:
+        fs = DECB(image.volume(1, 0))
+        fs.insert(first)
+        fs.insert(second)
+        current = DECB(image.volume(1, 0))
+        assert {f.name for f in current.files} == {"FIRST.BIN", "SECOND.BIN"}
+        assert current.read_file("FIRST.BIN") == first.read_bytes()
+        assert current.read_file("SECOND.BIN") == second.read_bytes()
+        assert {f.name for f in fs.files} == {"FIRST.BIN", "SECOND.BIN"}
+
+
+@pytest.mark.parametrize("operation", ["rename", "delete"])
+def test_stale_file_selection_cannot_mutate_a_replacement(card, tmp_path, operation):
+    source = tmp_path / "FILE.BIN"
+    source.write_bytes(b"payload")
+    with Image(card, True) as image:
+        view = image.volume(1, 0)
+        DECB(view).insert(source, name="OLD.BIN")
+        stale = DECB(view)
+        DECB(view).delete("OLD.BIN")
+        DECB(view).insert(source, name="NEW.BIN")
+        before = card.read_bytes()
+        with pytest.raises(FormatError, match="not found"):
+            if operation == "rename":
+                stale.rename("OLD.BIN", "WRONG.BIN")
+            else:
+                stale.delete("OLD.BIN")
+        assert card.read_bytes() == before
+
+
+def test_import_source_growth_is_bounded_and_rejected_before_edits(card, tmp_path, monkeypatch):
+    import drivepak_manager.filesystems.decb as decb
+    source = tmp_path / "GROW.BIN"
+    source.write_bytes(b"small source")
+    read = decb.read_exact
+    requested = []
+    def grow(file, length):
+        requested.append(length)
+        source.write_bytes(b"too big" * 100000)
+        return read(file, length)
+    with Image(card, True) as image:
+        before = card.read_bytes()
+        monkeypatch.setattr(decb, "read_exact", grow)
+        with pytest.raises(SafetyError, match="source changed"):
+            DECB(image.volume(1, 0)).insert(source)
+        assert requested == [len(b"small source")]
+        assert card.read_bytes() == before
+
+
+def test_other_edit_during_import_planning_is_never_overwritten(card, tmp_path, monkeypatch):
+    import drivepak_manager.filesystems.decb as decb
+    first, other = tmp_path / "FIRST.BIN", tmp_path / "OTHER.BIN"
+    first.write_bytes(b"first import")
+    other.write_bytes(b"other edit")
+    with Image(card, True) as image:
+        view = image.volume(1, 0)
+        read = decb.read_exact
+        concurrent = []
+        def edit_while_reading(file, length):
+            data = read(file, length)
+            if not concurrent:
+                concurrent.append(True)
+                DECB(view).insert(other)
+                concurrent.append(card.read_bytes())
+            return data
+        monkeypatch.setattr(decb, "read_exact", edit_while_reading)
+        with pytest.raises(SafetyError, match="changed while planning"):
+            DECB(view).insert(first)
+        assert card.read_bytes() == concurrent[1]
+        fs = DECB(view)
+        assert [file.name for file in fs.files] == ["OTHER.BIN"]
+        assert fs.read_file("OTHER.BIN") == other.read_bytes()

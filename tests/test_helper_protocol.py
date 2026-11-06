@@ -32,10 +32,13 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
     real_read_text = Path.read_text
     target_fds = set()
     validated = []
+    reject_validation = [None]
 
     def validate(expected, storage_paths=(), storage_fds=()):
         assert expected == d.identity and len(storage_fds) in (1, 2)
         validated.append(True)
+        if len(validated) == reject_validation[0]:
+            raise SafetyError("Card became busy before writing")
         return d
 
     def fake_open(path, flags, *args, **kwargs):
@@ -71,7 +74,7 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
     monkeypatch.setattr(helper.fcntl, "ioctl", fake_ioctl)
     monkeypatch.setattr(Path, "read_text", lambda p, *a, **kw: "7" if str(p) == "/sys/dev/block/240:1/diskseq" else real_read_text(p, *a, **kw))
 
-    def request(operation, files, manifest=None, acknowledge_no_backup=False, acknowledge_in_place=False):
+    def request(operation, files, manifest=None, acknowledge_no_backup=False, acknowledge_in_place=False, expect_error=False):
         client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         client.settimeout(10)
         target_fds.clear()
@@ -80,6 +83,8 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
             payload["manifest"] = manifest
         if acknowledge_no_backup:
             payload["acknowledge_no_backup"] = True
+        if operation in ("write", "write-direct"):
+            payload["source_fingerprint"] = helper.fingerprint_from_fd(files[0].fileno())
         if acknowledge_in_place:
             payload["acknowledge_in_place"] = True
             payload["journal_sha256"] = hashlib.sha256(Path(files[0].name).read_bytes()).hexdigest()
@@ -97,6 +102,9 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
             client.sendmsg([json.dumps(payload).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [f.fileno() for f in files]))])
             while True:
                 event = json.loads(client.recv(65536))
+                if event["event"] == "error" and expect_error:
+                    assert isinstance(future.exception(timeout=5), SafetyError)
+                    return event["message"]
                 assert event["event"] != "error", event
                 if event["event"] == "result":
                     future.result(timeout=5)
@@ -117,10 +125,17 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
     assert backup.read_bytes() == before and verify_backup(backup)["status"] == "verified"
     source = tmp_path / "source.img"
     source.write_bytes(b"\x39" * 1024)
+    # Backup-first mode must also revalidate after the complete-card comparison.
+    reject_validation[0] = len(validated) + 3
+    with source.open("rb", buffering=0) as src, backup.open("rb", buffering=0) as back:
+        error = request("write", [src, back], manifest, expect_error=True)
+    target_fds.clear()
+    reject_validation[0] = None
+    assert "became busy" in error and target.read_bytes() == before
     with source.open("rb", buffering=0) as src, backup.open("rb", buffering=0) as back:
         result = request("write", [src, back], manifest)
     target_fds.clear()
-    assert result["status"] == "verified" and len(validated) == 4
+    assert result["status"] == "verified" and len(validated) == 8
     assert target.read_bytes() == source.read_bytes() + before[1024:]
     assert backup.read_bytes() == before
     source.write_bytes(b"\x52" * 1536)
@@ -129,9 +144,18 @@ def test_helper_snapshot_and_write_with_real_descriptor_transport(tmp_path, monk
         result = request("write-direct", [src], acknowledge_no_backup=True)
     target_fds.clear()
     assert result["status"] == "verified" and result["backup_policy"] == "none-explicit-direct-write"
-    assert len(validated) == 6
+    assert len(validated) == 11
     assert target.read_bytes() == source.read_bytes() + previous[1536:]
     assert backup.read_bytes() == before
+    # The third validation is immediately before writing, after source hashing.
+    # A newly busy target must leave the complete simulated card untouched.
+    previous = target.read_bytes()
+    reject_validation[0] = len(validated) + 3
+    with source.open("rb", buffering=0) as src:
+        error = request("write-direct", [src], acknowledge_no_backup=True, expect_error=True)
+    target_fds.clear()
+    reject_validation[0] = None
+    assert "became busy" in error and target.read_bytes() == previous
     from drivepak_manager.patches import prepare_changes
     original, modified, journal = [tmp_path / n for n in ("original.img", "modified.img", "edits.dpp")]
     original.write_bytes(target.read_bytes())
@@ -162,6 +186,20 @@ def test_write_helper_requires_boolean_acknowledgement_before_device_access(tmp_
             helper.serve(server, os.getuid())
 
 
+@pytest.mark.parametrize("reviewed", [None, [0, 0, 512, 0, 0], [1, 2, 3], [True, 2, 3, 4, 5]])
+def test_helper_rejects_unreviewed_or_replaced_source_before_card_access(tmp_path, monkeypatch, reviewed):
+    source = tmp_path / "source.img"
+    source.write_bytes(bytes(512))
+    monkeypatch.setattr(helper, "validate", lambda *a, **kw: pytest.fail("Changed source reached device validation"))
+    client, server = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with client, server, source.open("rb") as src:
+        payload = {"operation": "write-direct", "expected": {}, "acknowledge_no_backup": True,
+                   "source_fingerprint": reviewed}
+        client.sendmsg([json.dumps(payload).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [src.fileno()]))])
+        with pytest.raises(SafetyError, match="reviewed file"):
+            helper.serve(server, os.getuid())
+
+
 def test_old_installed_helper_has_actionable_update_error_before_elevation(tmp_path, monkeypatch):
     import zipfile
     from drivepak_manager import linux
@@ -186,6 +224,20 @@ def test_earlier_patch_helper_rejected_before_elevation(tmp_path, monkeypatch):
     monkeypatch.setattr(linux.subprocess, "Popen", lambda *a, **kw: pytest.fail("Unaudited helper was elevated"))
     with pytest.raises(SafetyError, match="install-helper.sh.*No device was opened"):
         linux.invoke("write-patch", {}, [], acknowledge_in_place=True, recovery_manifest_path=tmp_path / "receipt.json")
+
+
+@pytest.mark.parametrize("operation", ["write", "write-direct"])
+def test_earlier_full_write_helper_rejected_before_elevation(tmp_path, monkeypatch, operation):
+    import zipfile
+    from drivepak_manager import linux
+    entry = tmp_path / "drivepak-manager-helper"
+    with zipfile.ZipFile(entry.with_name("drivepak-manager-helper.pyz"), "w") as archive:
+        archive.writestr("helper-capabilities.json", json.dumps({"protocol": 1, "operations": ["write", "write-direct"]}))
+    monkeypatch.setattr(linux, "HELPER", entry)
+    monkeypatch.setattr(linux, "helper_installed", lambda: True)
+    monkeypatch.setattr(linux.subprocess, "Popen", lambda *a, **kw: pytest.fail("Outdated helper was elevated"))
+    with pytest.raises(SafetyError, match="install-helper.sh.*No device was opened"):
+        linux.invoke(operation, {}, [], acknowledge_no_backup=True)
 
 
 @pytest.mark.parametrize("fault", [None, "missing-fd", "cancel", "disconnect", "writable", "wrong-content", "unpublished", "storage-conflict", "new-device-use", "fsync-failure"])

@@ -31,11 +31,17 @@ class RawVolume:
         if not stat.S_ISREG(Path(path).stat().st_mode):
             raise FormatError("OS-9 imports require regular raw volume files, not devices.")
         self.file = Path(path).open("rb", buffering=0)
-        self.size = Path(path).stat().st_size
-        self.sectors = self.size // 256
-        if not self.size or self.size % 256:
+        try:
+            opened = os.fstat(self.file.fileno())
+            if not stat.S_ISREG(opened.st_mode):
+                raise FormatError("OS-9 imports require an opened regular raw volume file.")
+            self.size = opened.st_size
+            self.sectors = self.size // 256
+            if not self.size or self.size % 256:
+                raise FormatError("OS-9 volume must contain raw 256-byte sectors, with no header.")
+        except BaseException:
             self.close()
-            raise FormatError("OS-9 volume must contain raw 256-byte sectors, with no header.")
+            raise
 
     def read(self, offset, length):
         if offset < 0 or length < 0 or offset + length > self.size:
@@ -286,9 +292,17 @@ class OS9:
         image = getattr(self.view, "image", None)
         if image is None or not image.writable:
             raise SafetyError("OS-9 edits require a separate writable working image.")
+        initial = fingerprint(image.file)
         image.layout().require_editable()
         self.__init__(self.view)  # never reuse stale allocation after an earlier edit
         self.validate_for_edit(progress, cancel)
+        if fingerprint(image.file) != initial:
+            raise SafetyError("The working image changed while validating OS-9 metadata. No file edits were written; reload its current contents.")
+        self._working_state = initial
+
+    def _require_unchanged_working_image(self):
+        if fingerprint(self.view.image.file) != self._working_state:
+            raise SafetyError("The working image changed while preparing OS-9 file edits. No file edits were written; reload its current contents.")
 
     def _file_entry(self, path):
         if not str(path).startswith("/") or ".." in PurePosixPath(path).parts:
@@ -384,6 +398,8 @@ class OS9:
         if not parent.is_dir:
             raise FormatError("Select an OS-9 directory for insertion.")
         with source.open("rb", buffering=0) as inp:
+            if not stat.S_ISREG(os.fstat(inp.fileno()).st_mode):
+                raise SafetyError("OS-9 file insertion requires an opened regular source file.")
             initial = fingerprint(inp)
             size = initial[2]
             if size > self.sectors * 256 or size > 0xFFFFFFFF:
@@ -445,6 +461,7 @@ class OS9:
                 raise SafetyError("OS-9 import source changed before writing.")
             need_space(self.view.image.path.parent, size * 2 + 131072)
             with self.view.image.transaction():
+                self._require_unchanged_working_image()
                 inp.seek(0)
                 written, copied = 0, hashlib.sha256()
                 for start, count in segments:
@@ -473,6 +490,7 @@ class OS9:
         if any(x.lsn != f.lsn and x.name.casefold() == new_name.casefold() for x in self._entries(parent)):
             raise FormatError("An OS-9 file with the new name already exists.")
         with self.view.image.transaction():
+            self._require_unchanged_working_image()
             checkpoint(cancel)
             self.view.write(offset, encoded)
             OS9(self.view).validate_for_edit(progress, cancel)
@@ -487,6 +505,7 @@ class OS9:
             for n in range(start, start + count):
                 self._bit(bitmap, n, False)
         with self.view.image.transaction():
+            self._require_unchanged_working_image()
             checkpoint(cancel)
             self.view.write(offset, b"\0")
             self.view.write(256, bitmap)

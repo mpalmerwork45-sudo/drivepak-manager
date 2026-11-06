@@ -9,8 +9,8 @@ image operations are portable Python; real card access is Linux-only.
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.2.0-linux.tar.gz -C /tmp
-cd /tmp/drivepak-manager-1.2.0-linux
+tar -xzf dist/drivepak-manager-1.2.1-linux.tar.gz -C /tmp
+cd /tmp/drivepak-manager-1.2.1-linux
 sha256sum -c SHA256SUMS
 ./install-user.sh
 ```
@@ -68,13 +68,13 @@ The system Python must be 3.11+ as well. The wrapper, zipapp and every ancestor
 directory must be root-owned and not group/world writable. The GUI checks that
 before invoking pkexec. No user-supplied Python path is imported by the helper.
 
-Changed-sector apply/recovery requires the 1.1.1 helper's audited receipt and
-recovery checks. Even the earlier 1.1.0 helper must be updated. Version 1.2.0
-uses the same audited card-edit protocol, so an installed 1.1.1 helper remains
-sufficient. Install a compatible helper after any active operation has finished; older helpers
-are rejected before device open for these operations. Updating the helper does
-not itself access a card. See [CARD_EDITS.md](CARD_EDITS.md) for the image-based
-partial-update workflow and its recovery limits.
+**Install the 1.2.1 helper before full-image writes.** This audit adds source
+identity binding across confirmation/authentication and a final device-use check
+after lengthy verification reads. The app rejects older helpers before elevation
+for full writes, including backup-first writes. Changed-sector journals keep the
+existing audited protocol and remain compatible. Install only after any active
+operation has finished; updating the helper does not itself access a card. See
+[AUDIT-1.2.1.md](AUDIT-1.2.1.md) and [CARD_EDITS.md](CARD_EDITS.md).
 Polkit uses `auth_admin`, not a persistent/passwordless authorization. A normal
 Kubuntu session provides its authentication agent. UDisks handles deliberate
 unmount requests through its existing service.

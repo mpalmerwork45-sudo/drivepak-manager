@@ -10,7 +10,7 @@ from .errors import FormatError, SafetyError
 from .format import (BLOCK, PAYLOAD, SLOT_BYTES, SLOT_SECTORS, MAX_PARTITIONS,
                      DEFAULTS, inspect, encode_name, p24)
 from .streams import (atomic_output, checkpoint, copy_verified, distinct, read_exact,
-                      report, write_all, need_space, hash_file)
+                      report, write_all, need_space, hash_file, fingerprint)
 
 RAW_DISK_SIZES = {161280: "35 tracks, single sided", 184320: "40 tracks, single sided",
                   322560: "35 tracks, double sided", 368640: "80 tracks single sided / 40 double sided",
@@ -19,12 +19,20 @@ RAW_DISK_SIZES = {161280: "35 tracks, single sided", 184320: "40 tracks, single 
 
 def read_disk_file(path):
     p = Path(path)
-    if not p.is_file() or p.stat().st_size not in RAW_DISK_SIZES:
-        length = p.stat().st_size if p.exists() else 0
-        if 1 <= length % 256 <= 5:
-            raise FormatError("This appears to be a JVC headered image. Only raw 256-byte-sector images are supported; export raw in your emulator first.")
-        raise FormatError("Unsupported disk representation/length. Use a raw 161280, 184320, 322560, 368640 or 737280-byte sector image. DMK, HFE and VDK are unsupported.")
-    b = p.read_bytes()  # bounded to one 720 KiB slot
+    if not p.is_file():
+        raise FormatError("Disk imports require a regular raw sector image.")
+    with p.open("rb", buffering=0) as f:
+        initial = fingerprint(f)
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise FormatError("Disk imports require a regular raw sector image.")
+        length = initial[2]
+        if length not in RAW_DISK_SIZES:
+            if 1 <= length % 256 <= 5:
+                raise FormatError("This appears to be a JVC headered image. Only raw 256-byte-sector images are supported; export raw in your emulator first.")
+            raise FormatError("Unsupported disk representation/length. Use a raw 161280, 184320, 322560, 368640 or 737280-byte sector image. DMK, HFE and VDK are unsupported.")
+        b = read_exact(f, length)  # bounded even if another process grows the file
+        if fingerprint(f) != initial:
+            raise SafetyError("Disk import source changed while reading; retry with a stable source.")
     if b[:2] in (b"dk", b"HX") or b[:8] == b"HXCPICFE":
         raise FormatError("Headered VDK/HFE images are unsupported. Supply raw sector data.")
     if b[0] in (0, 255) and b[1] in (35, 40, 80) and 128 <= int.from_bytes(b[2:4], "little") <= 0x4000 and not any(b[5:12]):
@@ -38,8 +46,13 @@ class Image:
         if not stat.S_ISREG(self.path.stat().st_mode):
             raise SafetyError("Image access requires a regular file. Select cards through the card workflow.")
         self.file = self.path.open("r+b" if writable else "rb", buffering=0)
-        self.size = self.path.stat().st_size
+        opened = os.fstat(self.file.fileno())
+        if not stat.S_ISREG(opened.st_mode):
+            self.file.close()
+            raise SafetyError("Image access requires a regular file.")
+        self.size = opened.st_size
         self.writable = writable
+        self.failure_reason = None
         self._io_lock = threading.RLock()
         self._journal = None
         self._records = []
@@ -54,6 +67,7 @@ class Image:
         self.close()
 
     def read(self, offset, count):
+        self.require_usable()
         if offset < 0 or count < 0 or offset + count > self.size:
             raise FormatError(f"Read outside image at byte {offset}, length {count}.")
         with self._io_lock:
@@ -61,6 +75,7 @@ class Image:
             return read_exact(self.file, count)
 
     def write(self, offset, data):
+        self.require_usable()
         if not self.writable or self._journal is None:
             raise SafetyError("Writes require a transaction on a separate working image.")
         if offset < 0 or offset + len(data) > self.size:
@@ -77,26 +92,41 @@ class Image:
 
     @contextmanager
     def transaction(self):
+        self.require_usable()
         if self._journal is not None:
             raise SafetyError("Nested image transaction.")
         need_space(self.path.parent, 0)
-        with tempfile.TemporaryFile(dir=self.path.parent) as journal:
+        # Undo bytes must reach the file before changing the image. A buffered
+        # journal can defer ENOSPC until rollback seeks, losing its own undo.
+        with tempfile.TemporaryFile(dir=self.path.parent, buffering=0) as journal:
             self._journal, self._records = journal, []
             try:
                 yield self
                 self.file.flush()
                 os.fsync(self.file.fileno())
-            except BaseException:
-                for offset, size, pos in reversed(self._records):
-                    with self._io_lock:
-                        journal.seek(pos)
-                        self.file.seek(offset)
-                        write_all(self.file, read_exact(journal, size))
-                self.file.flush()
-                os.fsync(self.file.fileno())
+            except BaseException as error:
+                try:
+                    for offset, size, pos in reversed(self._records):
+                        with self._io_lock:
+                            journal.seek(pos)
+                            self.file.seek(offset)
+                            write_all(self.file, read_exact(journal, size))
+                    self.file.flush()
+                    os.fsync(self.file.fileno())
+                except BaseException as rollback_error:
+                    self.failure_reason = (
+                        f"Working image rollback failed ({rollback_error}) after: {error}. "
+                        "This working image cannot be saved, edited or written to a card. "
+                        "Discard it and reopen an unchanged original or verified backup.")
+                    self.writable = False
+                    raise SafetyError(self.failure_reason) from rollback_error
                 raise
             finally:
                 self._journal, self._records = None, []
+
+    def require_usable(self):
+        if self.failure_reason:
+            raise SafetyError(self.failure_reason)
 
     def layout(self):
         return inspect(self)
@@ -201,9 +231,12 @@ class Image:
         if os9_path:
             distinct(self.path, os9_path)
             with RawVolume(os9_path) as raw:
+                source_fingerprint = fingerprint(raw.file)
                 fs = OS9(raw)
                 fs.list_dir()
                 count = raw.sectors
+                if fingerprint(raw.file) != source_fingerprint:
+                    raise SafetyError("OS-9 volume changed during validation.")
             kind = 3
         else:
             if not 1 <= disks <= 256:
@@ -248,7 +281,8 @@ class Image:
                     checkpoint(cancel)
                     view.write(disk * SLOT_BYTES, blank)
             else:
-                view.import_raw(os9_path, progress, cancel)
+                view.import_raw(os9_path, progress, cancel, expected_source=source_fingerprint)
+                OS9(view).list_dir()
             if kind == 2 and not layout.defaults["DOS"] and not any(p.kind == 2 and p.disks for p in layout.partitions):
                 self.write(DEFAULTS["DOS"], p24(start))
             checkpoint(cancel)
@@ -264,13 +298,18 @@ class Image:
             raise FormatError("Select an OS-9 partition.")
         distinct(self.path, source)
         with RawVolume(source) as raw:
+            source_fingerprint = fingerprint(raw.file)
             fs = OS9(raw)
             fs.list_dir()
             if raw.sectors != p.count:
                 raise FormatError("Replacement OS-9 volume must exactly match the partition's sector count. Add it as a new partition for a different size.")
+            if fingerprint(raw.file) != source_fingerprint:
+                raise SafetyError("OS-9 volume changed during validation.")
         need_space(self.path.parent, p.count * BLOCK)
         with self.transaction():
-            self.volume(index, editing=True).import_raw(source, progress, cancel)
+            view = self.volume(index, editing=True)
+            view.import_raw(source, progress, cancel, expected_source=source_fingerprint)
+            OS9(view).list_dir()
             checkpoint(cancel)
 
 
@@ -321,19 +360,20 @@ class PayloadView:
                 write_all(f, self.read(pos, n))
                 report(progress, pos + n, length, "Exporting logical sectors")
 
-    def import_raw(self, source, progress=None, cancel=None):
+    def import_raw(self, source, progress=None, cancel=None, *, expected_source=None):
         with open(source, "rb", buffering=0) as f:
-            size = os.fstat(f.fileno()).st_size
+            before = fingerprint(f)
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode) or (expected_source is not None and before != expected_source):
+                raise SafetyError("Raw volume source changed after validation; no replacement data was imported.")
+            size = before[2]
             if size != self.size:
                 raise FormatError("Raw volume size must match destination exactly.")
-            before = os.fstat(f.fileno())
             for pos in range(0, size, 256 * PAYLOAD):
                 checkpoint(cancel)
                 n = min(256 * PAYLOAD, size - pos)
                 self.write(pos, read_exact(f, n))
                 report(progress, pos + n, size, "Importing logical sectors (preserving card padding)")
-            after = os.fstat(f.fileno())
-            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            if before != fingerprint(f):
                 raise SafetyError("Import source changed while reading.")
 
 
@@ -385,6 +425,7 @@ class Session:
         self.saved_as = None
 
     def save_as(self, destination, progress=None, cancel=None):
+        self.image.require_usable()
         distinct(self.original, self.working, destination)
         digest = copy_verified(self.working, destination, progress, cancel)
         self.saved_as = str(Path(destination).resolve())
@@ -396,6 +437,9 @@ class Session:
         if hash_file(self.original, progress, cancel) != self.original_digest:
             raise SafetyError("Original has changed outside this application. Reopen a verified backup to recover.")
         fresh = Session.open(self.original, self.working.parent, progress, cancel)
+        if fresh.original_digest != self.original_digest:
+            fresh.close()
+            raise SafetyError("Original changed while discarding edits. The current working image was retained; reopen a verified backup to recover.")
         self.image.close()
         self.working, self.image = fresh.working, fresh.image
         self.changes, self.saved_as = [], None

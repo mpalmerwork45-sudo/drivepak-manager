@@ -186,6 +186,30 @@ def test_session_immutable_save_discard_hardlinks(card, tmp_path):
     s.close()
 
 
+def test_discard_rejects_original_changed_between_check_and_copy(card, tmp_path, monkeypatch):
+    import drivepak_manager.image as module
+    session = Session.open(card, tmp_path / "work")
+    session.image.rename_partition(1, "KEEPEDIT")
+    session.changed("rename")
+    working, edited = session.working, session.working.read_bytes()
+    real_hash = module.hash_file
+    def replace_after_hash(path, *args, **kwargs):
+        digest = real_hash(path, *args, **kwargs)
+        with card.open("r+b", buffering=0) as f:
+            f.write(b"CHANGED!")
+        return digest
+    monkeypatch.setattr(module, "hash_file", replace_after_hash)
+    try:
+        with pytest.raises(SafetyError, match="changed while discarding"):
+            session.discard()
+        assert session.working == working
+        assert session.working.read_bytes() == edited
+        assert session.image.layout().partition(1).name == "KEEPEDIT"
+        assert session.changes == ["rename"]
+    finally:
+        session.close()
+
+
 def test_os9_browse_extract_and_add_replace(card, os9_volume, tmp_path):
     with RawVolume(os9_volume) as raw:
         fs = OS9(raw)
@@ -204,6 +228,43 @@ def test_os9_browse_extract_and_add_replace(card, os9_volume, tmp_path):
         assert original_padding == image.read(image.layout().partition(idx).start * 512 + 256, 256)
         image.delete_partition(idx)
         assert image.layout().defaults["DD"] == 0
+
+
+@pytest.mark.parametrize("replace", [False, True])
+def test_os9_volume_import_is_bound_to_validated_file(card, os9_volume, monkeypatch, replace):
+    with Image(card, True) as image:
+        index = image.create_partition("OS9", os9_path=os9_volume) if replace else None
+        before = card.read_bytes()
+        real_transaction = image.transaction
+        def swap_source_after_validation():
+            size = os9_volume.stat().st_size
+            os9_volume.rename(os9_volume.with_suffix(".old"))
+            os9_volume.write_bytes(bytes(size))  # same length, invalid replacement
+            return real_transaction()
+        monkeypatch.setattr(image, "transaction", swap_source_after_validation)
+        with pytest.raises(SafetyError, match="changed after validation"):
+            if replace:
+                image.import_os9(index, os9_volume)
+            else:
+                image.create_partition("OS9", os9_path=os9_volume)
+        assert card.read_bytes() == before  # includes table, padding and defaults
+
+
+def test_disk_reader_rejects_growth_with_a_bounded_read(tmp_path, monkeypatch):
+    import drivepak_manager.image as module
+    source = tmp_path / "growing.dsk"
+    source.write_bytes(b"x" * 161280)
+    real_read = module.read_exact
+    lengths = []
+    def grow_before_read(f, length):
+        lengths.append(length)
+        with source.open("ab", buffering=0) as other:
+            other.write(b"y" * 256)
+        return real_read(f, length)
+    monkeypatch.setattr(module, "read_exact", grow_before_read)
+    with pytest.raises(SafetyError, match="changed while reading"):
+        read_disk_file(source)
+    assert lengths == [161280]
 
 
 def test_os9_bad_extent_segments_names(os9_volume):

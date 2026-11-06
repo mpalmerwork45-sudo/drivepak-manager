@@ -128,7 +128,7 @@ def test_helper_missing_privileges_and_descriptor_restrictions(tmp_path, monkeyp
     import drivepak_manager.linux as linux
     monkeypatch.setattr(linux, "helper_installed", lambda: False)
     with pytest.raises(SafetyError, match="not installed"):
-        invoke("write", {}, [])
+        invoke("backup", {}, [])
     p = tmp_path / "regular"
     p.write_bytes(b"x")
     with p.open("rb") as f:
@@ -153,7 +153,7 @@ def test_authentication_denial_is_actionable(tmp_path, monkeypatch):
     monkeypatch.setattr(linux, "helper_installed", lambda: True)
     monkeypatch.setattr(linux.subprocess, "Popen", lambda *a, **kw: Denied())
     with pytest.raises(SafetyError, match="authentication failed"):
-        invoke("write", {}, [])
+        invoke("backup", {}, [])
 
 
 def test_raw_device_use_inspection(tmp_path, monkeypatch):
@@ -185,3 +185,76 @@ def test_deleted_source_or_journal_descriptor_rejected(tmp_path):
         journal.unlink()
         with pytest.raises(SafetyError, match="deleted"):
             check_fd(source.fileno(), os.getuid())
+
+
+def test_raw_block_device_opened_via_non_dev_path_is_detected(tmp_path, monkeypatch):
+    import stat
+    from types import SimpleNamespace
+    from drivepak_manager.devices import open_device_users
+    proc = tmp_path / "999999"
+    (proc / "fd").mkdir(parents=True)
+    fd = proc / "fd/3"
+    fd.symlink_to("/run/mounted-device-alias")
+    (proc / "comm").write_text("other-writer")
+    original = os.stat
+    monkeypatch.setattr(os, "stat", lambda p, *a, **kw: SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=os.makedev(8, 16)) if str(p) == str(fd) else original(p, *a, **kw))
+    assert open_device_users({"8:16"}, strict=True, procroot=tmp_path) == ["other-writer (PID 999999)"]
+
+
+def test_backup_does_not_create_directories_before_storage_check(tmp_path, monkeypatch):
+    import drivepak_manager.linux as linux
+    from types import SimpleNamespace
+    target = SimpleNamespace(identity={}, capacity=1024)
+    destination = tmp_path / "on-target" / "backup.img"
+    monkeypatch.setattr(linux, "validate", lambda *a, **kw: (_ for _ in ()).throw(SafetyError("Target backing conflict")))
+    with pytest.raises(SafetyError):
+        linux.backup_card(target, destination)
+    assert not destination.parent.exists()
+
+
+@pytest.mark.parametrize("filesystem", ["nfs", "nfs4", "cifs"])
+def test_unverifiable_network_backing_fails_closed(tmp_path, monkeypatch, filesystem):
+    import json
+    import drivepak_manager.devices as devices
+    monkeypatch.setattr(devices, "command", lambda args: json.dumps({"filesystems": [{"maj:min": "0:999", "source": "localhost:/target-card", "fstype": filesystem}]}))
+    with pytest.raises(SafetyError, match="backing|independent"):
+        devices.path_devices(tmp_path, Topology([], tmp_path / "sys"))
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_client_rejects_source_replaced_after_review(tmp_path, monkeypatch, direct):
+    import drivepak_manager.linux as linux
+    from drivepak_manager.streams import fingerprint
+    from types import SimpleNamespace
+    target = SimpleNamespace(identity={})
+    source, backup = tmp_path / "source.img", tmp_path / "backup.img"
+    source.write_bytes(b"a" * 512)
+    backup.write_bytes(b"b" * 512)
+    with source.open("rb") as f:
+        reviewed = fingerprint(f)
+    replacement = tmp_path / "replacement.img"
+    replacement.write_bytes(b"c" * 512)
+    os.replace(replacement, source)
+    monkeypatch.setattr(linux, "validate", lambda *a, **kw: None)
+    monkeypatch.setattr(linux, "verify_backup", lambda *a, **kw: {})
+    monkeypatch.setattr(linux, "invoke", lambda *a, **kw: pytest.fail("Changed source reached privileged helper"))
+    with pytest.raises(SafetyError, match="changed after review"):
+        if direct:
+            linux.write_card_direct(target, source, acknowledge_no_backup=True, expected_source=reviewed)
+        else:
+            linux.write_card(target, source, backup, expected_source=reviewed)
+
+
+def test_unmount_rechecks_device_against_same_current_topology(tmp_path, monkeypatch):
+    from dataclasses import replace
+    import drivepak_manager.devices as devices
+    topo = fake_topology(tmp_path)
+    topo.rows["8:17"]["mountpoints"] = ["/media/card"]
+    card = next(d for d in discover(topo, protected_paths=[]) if d.path == "/dev/usb")
+    # System use appeared after the picker was built but before unmount.
+    unsafe = replace(card, reasons=("Backs home",))
+    monkeypatch.setattr(devices, "topology", lambda: topo)
+    monkeypatch.setattr(devices, "discover", lambda t=None: [card if t is None else unsafe])
+    monkeypatch.setattr(devices, "command", lambda *a: pytest.fail("Unmount was sent for a now-protected target"))
+    with pytest.raises(SafetyError):
+        devices.unmount(card)

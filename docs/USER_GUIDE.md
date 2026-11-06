@@ -120,7 +120,9 @@ This partial recovery journal is not a complete backup. See [CARD_EDITS.md](CARD
 **Save image as** writes and verifies a new file. **Review changes** shows paths
 and the edit history. **Discard changes** recreates the working copy from its
 unchanged original. Working files remain on disk after closing; their displayed
-paths can be opened later. Manage old working files manually only after ensuring
+paths can be opened later if no rollback failure was reported. An unusable working
+image must be discarded and recreated from an unchanged original or verified
+backup; do not reopen it for writing. Manage old working files manually only after ensuring
 you have the originals/backups and saved results you want.
 
 **Write image to card** starts by showing the **Image file to read from**.
@@ -136,7 +138,7 @@ Use a separate filename on independent storage and wait for backup verification.
 For direct writing, clear that checkbox. No Save dialog appears and no recovery
 backup is created. Existing card data will be overwritten; a failure may leave
 partial contents. Keep any earlier recovery images yourself. Direct writing
-requires the updated 1.0.3 helper (see INSTALL.md).
+requires the updated 1.2.1 helper, as does backup-first full writing (see INSTALL.md).
 
 Review the single final dialog naming **READ SOURCE IMAGE**, **WRITE DESTINATION
 CARD**, the backup or no-backup warning, written range and retained tail. Confirm

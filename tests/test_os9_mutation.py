@@ -1,6 +1,8 @@
 """Byte-built classic RBF volumes; writer checks never use downloaded content."""
 import json
+import os
 from pathlib import Path
+import stat
 import threading
 
 import pytest
@@ -482,3 +484,67 @@ def test_explicit_non_256_sector_size_is_rejected(os9_image):
     with pytest.raises(FormatError):
         OS9(view)
     assert image.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("operation", ["insert", "raw-volume"])
+def test_opened_descriptor_type_is_checked_instead_of_trusting_path(os9_image, os9_volume, tmp_path, monkeypatch, operation):
+    from drivepak_manager.filesystems.os9 import RawVolume
+    image, index, _ = os9_image
+    source = tmp_path / "CHANGED"
+    source.write_bytes(b"still a disposable regular-file adapter")
+    inspected = os9_volume if operation == "raw-volume" else source
+    real_open, real_fstat = Path.open, os.fstat
+    mismatched = set()
+    class ChangedType:
+        def __init__(self, file):
+            self.file = file
+            mismatched.add(file.fileno())
+        def __getattr__(self, name):
+            return getattr(self.file, name)
+        def close(self):
+            mismatched.discard(self.file.fileno())
+            self.file.close()
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.close()
+    def opened(path, *args, **kwargs):
+        file = real_open(path, *args, **kwargs)
+        return ChangedType(file) if path == inspected else file
+    def fstat(fd):
+        actual = real_fstat(fd)
+        if fd not in mismatched:
+            return actual
+        fields = list(actual)
+        fields[0] = stat.S_IFCHR | 0o600
+        return os.stat_result(fields)
+    monkeypatch.setattr(Path, "open", opened)
+    monkeypatch.setattr(os, "fstat", fstat)
+    before = image.path.read_bytes()
+    with pytest.raises((FormatError, SafetyError), match="regular"):
+        if operation == "raw-volume":
+            with RawVolume(inspected):
+                pass
+        else:
+            OS9(image.volume(index, editing=True)).insert(inspected)
+    assert image.path.read_bytes() == before
+
+
+def test_insertion_does_not_overwrite_a_later_valid_working_image_edit(os9_image, tmp_path):
+    image, index, part = os9_image
+    first, second = tmp_path / "FIRST", tmp_path / "SECOND"
+    first.write_bytes(b"first import")
+    second.write_bytes(b"valid later edit that must survive")
+    later = []
+    def concurrent_edit(done, total, phase):
+        if phase == "Checking OS-9 import source" and done and not later:
+            # Simulate another writer between validation/planning and the first
+            # transaction. Both files alone fit and form a valid RBF filesystem.
+            later.append(True)
+            OS9(image.volume(index, editing=True)).insert(second)
+            later.append(image.path.read_bytes())
+    with pytest.raises(SafetyError, match="working image changed|Working image changed"):
+        OS9(image.volume(index, editing=True)).insert(first, progress=concurrent_edit)
+    assert len(later) == 2 and image.path.read_bytes() == later[1]
+    assert file_bytes(logical_payload(image, part), "SECOND") == second.read_bytes()
+    assert {file.name for file in OS9(image.volume(index)).list_dir()} == {"HELLO", "SECOND"}
