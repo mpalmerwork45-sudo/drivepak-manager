@@ -1,7 +1,7 @@
 # Supported CoCoNet Drive Pak profile
 
 This document describes observations and the conservative profile implemented
-by DrivePak Manager 1.1.1. It is not a universal Drive Pak specification. CoCo SDC,
+by DrivePak Manager 1.2.0. It is not a universal Drive Pak specification. CoCo SDC,
 FAT32-hosted disk collections, and undocumented future 32-bit addressing are
 outside this profile. Unsupported images can still be copied, completely backed
 up from a safe card, restored as raw bytes, and inspected diagnostically.
@@ -151,19 +151,58 @@ silently interpreted as an extended filesystem.
 
 ## OS-9
 
-The read-only browser implements classic 6809 RBF's 256-byte sectors, DD.TOT and
+The browser implements classic 6809 RBF's 256-byte sectors, DD.TOT and
 DD.DIR, 29-byte high-bit-terminated names, 32-byte directory entries, descriptors
 with a four-byte file size and up to 48 five-byte segments. Extents, descriptor
 pointers, segment overlap, directory sizes and declared lengths are validated.
 File extraction streams segment data and records owner/date/attribute descriptor
 metadata separately. Traversal uses explicit paths and does not follow `..`.
 OS-9/68k/extended sector variants are rejected.
+The known sector-size byte at `0x68` must be 0 or 1 (256 bytes). Nonzero map
+location extension bytes at `0x64–0x67` or the second size byte `0x69` disable
+file editing because this classic writer does not reinterpret those variants.
+
+On validated classic 256-byte-sector volumes with one sector per allocation
+cluster, the working-image editor supports file insertion, replacement, rename
+and deletion. It checks the complete reachable directory tree, descriptor and
+data extents, bitmap allocation and overlaps before mutation. Linked/aliased file
+descriptors, inconsistent metadata, unsupported cluster sizes or ambiguous
+layouts make file editing unavailable; reading and complete volume transfer are
+still available where their own bounds can be established. Existing unknown
+allocated or bad-sector bitmap bits remain set. A file referenced by the stored
+bootstrap range cannot be replaced or deleted through the file editor. Directory
+creation, removal and rename are outside the current scope.
+Validation is bounded to 65,536 reachable descriptors. New allocation runs stay
+within 2,048-sector bitmap-page boundaries for 6809 compatibility and within the
+48-entry segment table; excessive fragmentation/size is rejected before writing.
+Deletion retains old payload bytes and directory capacity while freeing the
+file descriptor and data bitmap bits. It never reclaims unexplained allocations.
+
+The bitmap starts at LSN 1 in the supported classic profile. DD.MAP is its byte
+length; DD.BIT is the number of logical sectors per allocation bit. Bitmap bits
+are most-significant-bit first; a set bit may represent an allocated, defective
+or nonexistent cluster. FD attributes, owner and dates are preserved on rename;
+replacement preserves existing metadata unless an explicit override or verified
+sidecar supplies it. Extracted files have a SHA-256-bound metadata sidecar so
+reinsertion can restore attributes, owner and timestamps after verification.
+New files default to attributes `0x1b`, owner 0 and local current time. Timestamp
+year bytes use years since 1900; different legacy OS-9 programs can display later
+years differently. No text or binary content conversion is performed.
+
+RBF research references: [Tandy OS-9 Technical Reference, chapter 5](https://colorcomputerarchive.com/coco/Documents/Manuals/Operating%20Systems/OS-9%20Technical%20Reference%20%28Tandy%29.pdf),
+the [OS-9 System Programmer's Manual, section 6.1](https://www.roug.org/retrocomputing/os/os9/os9sysprog.html#61-logical-and-physical-disk-organization),
+and ToolShed's [bitmap implementation](https://github.com/nitros9project/toolshed/blob/main/librbf/librbfbitmap.c)
+and [formatter](https://github.com/nitros9project/toolshed/blob/main/librbf/librbfformat.c).
+The editor is an independent implementation; no reference source code is copied.
+ToolShed was also used as an independent generated-volume format/check/extraction
+test; its pinned revision and local source hashes are in [os9-research.json](os9-research.json).
 
 Entire partition payloads can be exported. A replacement must be a structurally
 recognised raw OS-9 volume exactly matching the partition sector count; different
 sizes are added as new partitions. Newly created OS-9 entries use type 3. Type 4
 is recognised as Explorer's OS-9 classification, with actual RBF metadata still
-validated. Individual OS-9 file modification is outside this release's scope.
+validated. Whole-volume import/export remains available independently of the
+file editor's mutation restrictions.
 
 The reference's SIERRA entry (index 36) contains **56518 sectors**, but its DD.TOT
 declares **73728**. Browsing it is disabled with those exact counts. An explicitly

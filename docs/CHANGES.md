@@ -1,5 +1,21 @@
 # Changes
 
+## 1.2.0
+
+* Added individual OS-9 file insertion, explicit replacement, rename and deletion
+  in working images. Existing browsing and full-volume transfers remain available.
+* File edits require classic 256-byte-sector RBF and one sector per allocation
+  cluster. The reachable tree, bitmap and file extents are validated first;
+  linked descriptors, crosslinks, corruption and ambiguous layouts fail closed.
+  Boot-referenced file replacement and deletion are rejected, and unknown
+  allocated bitmap bits are preserved. Directories can be browsed but not edited.
+* OS-9 extraction sidecars bind metadata to file bytes with SHA-256 for verified
+  reinsertion. Existing file metadata is preserved on rename and replacement
+  unless explicitly overridden. See [FORMAT.md](FORMAT.md) for date policy and
+  the independently implemented RBF format references.
+* The 1.1.1 card helper remains compatible; OS-9 file changes are applied to a
+  working image, then saved or written through the existing card workflows.
+
 ## 1.1.1
 
 Safety audit of changed-sector editing and recovery; see [AUDIT-1.1.1.md](AUDIT-1.1.1.md).

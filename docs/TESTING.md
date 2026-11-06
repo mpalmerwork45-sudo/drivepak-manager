@@ -6,8 +6,8 @@ enumeration was exercised. The actual PySide6 Widgets interface was launched on
 the X desktop, browsed and visually inspected. The helper was staged under `/tmp`,
 with no system installation or configuration change.
 
-Recorded results (2026-11-01, version 1.1.1): **157 offline tests passed;
-3 opt-in reference integration tests passed** (skipped by default). The
+Recorded results (2026-11-06, version 1.2.0): **209 offline tests passed;
+4 opt-in reference integration tests passed** (skipped by default). The
 card-editing audit used no real card access. Findings and fixes are recorded in
 [AUDIT-1.1.1.md](AUDIT-1.1.1.md).
 
@@ -20,6 +20,7 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q
 python3 tools/download_references.py
 DRIVEPAK_REFERENCE=1 .venv/bin/python -m pytest -q -m reference
 .venv/bin/python tools/desktop_smoke.py
+.venv/bin/python tools/desktop_smoke.py --os9
 ./tools/build_linux.sh
 .venv/bin/python tools/verify_package.py
 .venv/bin/python -m pip check
@@ -35,7 +36,7 @@ IPC or run the offline suite outside that sandbox. This does not authorize real
 card I/O. Headless GUI tests use Qt's offscreen plugin and substitute native
 dialogs with controlled responses.
 
-Full-image integration is opt-in. Keep about 12 GiB free for extraction and
+Full-image integration is opt-in. Keep about 16 GiB free for extraction and
 disposable working/saved images. `pytest --basetemp` can select another test
 filesystem. The 2 GB-labelled image actually contains 1,866,210,304 bytes. Its
 original is read-only and SHA-256 checked before/after integration. The tests
@@ -46,7 +47,11 @@ full-size simulated card, checks the complete result, recovers it, and requires
 the original whole-image SHA-256. The independent physical write offset is
 `(1024 + 308) * 512`; exactly one 512-byte sector is written.
 
-The three-test reference run took about 26 seconds on this desktop. Copy/hash
+The fourth test inserts, renames, replaces, extracts and deletes a generated
+binary in the reference NitrOS-9 `/CMDS` directory. It compares the complete
+image outside allowed allocation/directory metadata and free payload sectors,
+including all physical padding and other partitions, and rechecks the immutable
+original hash. The four-test reference run took about 32 seconds. Copy/hash
 buffers are 4 MiB; payload transfers and journal comparisons use bounded batches.
 This timing does not predict USB reader performance. Pytest may retain prior
 temporary runs; allow additional space for those or use a dedicated test temp
@@ -60,7 +65,7 @@ directory.
 | Preservation | Byte-identical copies, independent offsets, non-FF padding, reserved header/entry bytes, unaffected partitions and logical tails |
 | Disks | Every explicit export size, round trips, smaller imports/tail choices, duplicate mapping rejection, prevalidated batch failures and rollback |
 | BASIC files | Exact binary data and metadata, empty/full-sector/full-granule/max lengths, allocation across track 17, sidecars, rename/delete, deleted entries, orphan/cyclic allocation and disk full |
-| OS-9 | Root/descriptors/segments/names, extraction, complete volume add/export/replace, invalid extents and explicitly acknowledged diagnostic export |
+| OS-9 | Root/descriptors/segments/names, extraction and verified sidecar reinsertion, regular file insert/replace/rename/delete, fragmented allocation and 48-segment limit, directory growth and bitmap-page boundary, crosslinks/free-live sectors/aliases/cycles, boot protection, cancellation/write failure/source change rollback, non-FF padding, complete volume transfers and diagnostic export |
 | Backups/write | Complete simulated snapshots, durable reopen/hash, restore/readback, explicit no-backup writes/readback/cancellation, bounded sync batches and final-sync percentage order, larger-target tail, stale/foreign/modified provenance, second target and racing output protection |
 | I/O failures | Short reads/writes, EOF/EIO, zero writes, ENOSPC/space checks, batch flush failure in both write modes, cancellation before/during writing or blocked flushing, replacement, source instability, readback mismatch and missing privilege/authentication |
 | Device protection | USB with false removable flag, empty/zero-capacity slots, media removal after selection, internal/system/root/home/swap paths, parent/partition/mapper relationships, backing conflicts, mounts, disk sequence and other raw opens |
@@ -88,6 +93,22 @@ changed journal data after review, receipt descriptor/content/publication/storag
 checks, deleted files, short successful I/O, failed partial writes and flushes,
 replacement at the checkpoint, and the real client receipt-transfer socket loop
 with authentication substituted by a local test thread.
+
+Version 1.2.0 adds 46 focused OS-9 mutation cases, GUI/CLI round trips and a
+complete simulated-card changed-sector apply/recovery of OS-9 file edits.
+The GUI tests include nested-directory editing, executable permission presets,
+metadata preservation and heartbeat responsiveness during filesystem validation.
+The actual desktop and OS-9 insert dialog were launched on XCB using generated
+data only; screenshots are under the ignored `data/work/` directory.
+
+An additional independent interoperability check used ToolShed 2.6.1 at the
+revision in [os9-research.json](os9-research.json). ToolShed formatted a synthetic
+720-sector RBF volume and inserted an initial file. After DrivePak inserted,
+renamed and deleted another file, ToolShed `dir`, `dcheck` and binary extraction
+validated the exported results. `dcheck` reported zero duplicate, missing or
+extra clusters and zero bad descriptors; extracted content matched exactly.
+ToolShed is an optional research tool, never a normal-test dependency or a bundled
+component. This check used files exclusively and does not validate CoCo hardware.
 
 ## Installation verification
 
@@ -131,6 +152,12 @@ versions, reader model/serial, card brand/capacity, USB port and results.
   file/slot, choose **Apply image edits to card**, check the planned byte count
   and retain its journal/receipt. Wait for edited-sector readback, test the correct
   bank on the CoCo, then use **Recover card edits** and verify the before contents.
+- [ ] OS-9 file test: in a validated OS-9 folder, insert your own binary, choose
+  executable permissions if appropriate, rename/extract it and compare bytes.
+  Apply the working image edits to the spare card and check loading under OS-9.
+  Exercise replacement/deletion on the disposable test file, retaining the full
+  backup. File editing deliberately excludes boot-data replacement and directory
+  modification, and requires one-sector allocation clusters.
 - [ ] Return the spare to the computer. Open/verify the **initial** backup, take
   a **new** snapshot of its present contents, and explicitly restore the initial
   image through the normal write/readback workflow.

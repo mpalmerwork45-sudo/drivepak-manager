@@ -52,3 +52,48 @@ def test_cli_image_edit_journal_apply_and_recovery(tmp_path, capsys):
     assert target.read_bytes() == modified.read_bytes()
     assert main(["simulate-apply-edits", str(target), str(journal), "--receipt", str(tmp_path / "recovered.json"), "--recover"]) == 0
     assert target.read_bytes() == original.read_bytes()
+
+
+def test_cli_os9_insert_replace_rename_delete(card, os9_volume, tmp_path, capsys):
+    from drivepak_manager.filesystems.os9 import OS9
+    from drivepak_manager.image import Image
+    with Image(card, True) as image:
+        index = image.create_partition("OS9", os9_path=os9_volume)
+    original = card.read_bytes()
+    source = tmp_path / "new.bin"
+    source.write_bytes(bytes(range(256)) * 2 + b"\x00\xff\r\n")
+    inserted = tmp_path / "inserted.img"
+    assert main(["insert", str(card), str(inserted), "--partition", str(index), str(source),
+                 "--name", "NewFile", "--attributes", "0x2d", "--owner", "0x4567"]) == 0
+    with Image(inserted) as image:
+        file = OS9(image.volume(index)).resolve("/NewFile")
+        assert file.attributes == 0x2D and file.raw_fd[1:3] == b"\x45\x67"
+    extracted = tmp_path / "extracted.bin"
+    assert main(["extract", str(inserted), "--partition", str(index), "/NewFile", str(extracted)]) == 0
+    assert extracted.read_bytes() == source.read_bytes()
+    source.write_bytes(b"replacement\x00\xff\r\n" * 43)
+    replaced = tmp_path / "replaced.img"
+    assert main(["insert", str(inserted), str(replaced), "--partition", str(index), str(source),
+                 "--name", "NewFile", "--replace"]) == 0
+    with Image(replaced) as image:
+        fs = OS9(image.volume(index))
+        file = fs.resolve("/NewFile")
+        assert b"".join(fs.chunks(file)) == source.read_bytes()
+        assert file.attributes == 0x2D and file.raw_fd[1:3] == b"\x45\x67"
+    renamed = tmp_path / "renamed.img"
+    assert main(["rename-file", str(replaced), str(renamed), "--partition", str(index), "/NewFile", "Renamed"]) == 0
+    deleted = tmp_path / "deleted.img"
+    assert main(["delete-file", str(renamed), str(deleted), "--partition", str(index), "/Renamed"]) == 0
+    with Image(deleted) as image:
+        assert [file.name for file in OS9(image.volume(index)).list_dir()] == ["HELLO"]
+    assert card.read_bytes() == original
+
+
+def test_cli_rejects_mixed_basic_and_os9_metadata_before_output(card, tmp_path, capsys):
+    source = tmp_path / "FILE.BIN"
+    source.write_bytes(b"data")
+    output = tmp_path / "rejected.img"
+    assert main(["insert", str(card), str(output), "--partition", "1", str(source), "--type", "2"]) == 2
+    assert "Disk BASIC" in capsys.readouterr().err and not output.exists()
+    assert main(["insert", str(card), str(output), "--partition", "1", "--disk", "0", str(source), "--attributes", "0x1b"]) == 2
+    assert "OS-9" in capsys.readouterr().err and not output.exists()

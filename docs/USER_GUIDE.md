@@ -70,10 +70,23 @@ removes its directory/FAT references in the working image. Disk BASIC's usual
 ambiguous filesystems show a concrete reason and disable unsafe file edits.
 
 For an OS-9 partition, double-click directories and use **Up**. Files can be
-extracted without conversion. **Export OS-9 volume** transfers the complete stored
+extracted without conversion, inserted, replaced, renamed and deleted using the
+**Files** actions on a supported writable volume. Extraction produces a metadata
+sidecar; verified reinsertion can restore its attributes, owner and dates.
+New files without restored or explicitly selected metadata default to owner 0,
+attributes `0x1b` and the current local time. Replacements preserve existing
+metadata unless explicitly overridden or a verified sidecar supplies it.
+
+File edits require a validated classic 256-byte-sector RBF volume with one sector
+per allocation cluster. The application checks its reachable tree and reports
+why an ambiguous, corrupt, linked-file or unsupported volume cannot be edited.
+It rejects replacement or deletion of files referenced by the boot range.
+Directories can be browsed but not created, renamed or removed. These operations
+edit the working image and must be saved or applied to the card separately.
+
+**Export OS-9 volume** transfers the complete stored
 partition payload; **Replace OS-9 volume** requires a validated raw volume of the
-same sector count. Use a new partition for a differently sized volume. Individual
-OS-9 file modification is outside this release. An inconsistent extent gets a
+same sector count. Use a new partition for a differently sized volume. An inconsistent extent gets a
 specific warning; diagnostic raw export does not pretend to repair it.
 
 ## Partitions and blank images

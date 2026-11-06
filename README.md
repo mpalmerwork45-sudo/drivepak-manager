@@ -1,10 +1,10 @@
 # DrivePak Manager
 
-**Version 1.1.1 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
+**Version 1.2.0 — manage CoCoNet MicroSD Drive Pak cards and images on Linux.**
 
 A native Python/PySide6 desktop utility for Roger Taylor's **CoCoNet MicroSD
 Drive Pak** proprietary card layout. Supports working images, Disk BASIC disk
-and file management, OS-9 volume transfer and browsing, and authenticated Linux
+and file management, OS-9 file and volume management, and authenticated Linux
 card backup/write with independent verification. This is the older Drive Pak
 layout, distinct from CoCo SDC.
 
@@ -36,7 +36,7 @@ success indication.
 DrivePak Manager provides a desktop route from an existing card or raw image to
 a verified edited result. It backs up the whole card, opens a separate working
 copy, imports and exports virtual floppy images, manages standard Disk BASIC
-files, browses/extracts OS-9 files, transfers whole OS-9 volumes, manages supported
+files, manages files on supported OS-9 volumes, transfers whole OS-9 volumes, manages supported
 partitions and writes images back with verification. Blank images contain an
 empty DOS bank, with no games or firmware supplied.
 
@@ -117,7 +117,7 @@ To enable card access directly from a source installation:
 
 ```bash
 ./tools/build_linux.sh
-sudo ./dist/drivepak-manager-1.1.1-linux/install-helper.sh
+sudo ./dist/drivepak-manager-1.2.0-linux/install-helper.sh
 ```
 
 The helper is installed once, then updated when a release requires it. Device
@@ -128,8 +128,8 @@ To produce the Linux distribution, desktop launcher and helper:
 
 ```bash
 ./tools/build_linux.sh
-tar -xzf dist/drivepak-manager-1.1.1-linux.tar.gz -C /tmp
-/tmp/drivepak-manager-1.1.1-linux/install-user.sh
+tar -xzf dist/drivepak-manager-1.2.0-linux.tar.gz -C /tmp
+/tmp/drivepak-manager-1.2.0-linux/install-user.sh
 ```
 
 The user installer creates a private virtualenv, an Applications menu entry and
@@ -142,7 +142,7 @@ offline wheelhouse installation and uninstall commands.
 this administrator installation yourself:
 
 ```bash
-sudo /tmp/drivepak-manager-1.1.1-linux/install-helper.sh
+sudo /tmp/drivepak-manager-1.2.0-linux/install-helper.sh
 ```
 
 This installs only the constrained helper and its authentication policy. It does
@@ -259,10 +259,19 @@ metadata; it never changes line endings or strips binary load records. The
 directory filter and **Search disks** help find names.
 
 For supported OS-9 partitions, double-click directories and use **Up** to return.
-Files can be extracted, and complete volumes can be exported or replaced. A
-replacement must match the existing partition's sector count; add a new OS-9
-partition for a different size. Individual-file modification inside OS-9 is
-outside this release's scope.
+The **Files** menu extracts, inserts, replaces, renames and deletes files in the
+working image. An extracted file's SHA-256-bound sidecar can restore its owner,
+attributes and dates upon reinsertion. Existing metadata is preserved on rename
+and, unless explicitly overridden or restored from a verified sidecar, on
+replacement. New files default to owner 0, attributes `0x1b` and local time.
+
+These edits require a validated classic 256-byte-sector RBF volume with one
+sector per cluster. Linked descriptors, corrupt or ambiguous volume structures,
+and unsupported layouts disable unsafe edits with a reason. Files referenced by
+the boot range cannot be replaced or deleted. Directories can be browsed but not
+created, renamed or removed. Complete volumes can also be exported or replaced;
+a replacement must match the existing partition's sector count. Add a new OS-9
+partition for a different size.
 
 The **Partitions** menu creates empty BASIC banks or adds whole OS-9 volumes,
 renames/deletes entries and assigns defaults. Other disk numbers stay in place.
@@ -297,10 +306,11 @@ write. [Complete safety and recovery details](docs/SAFETY.md).
   Headered JVC, DMK, VDK and HFE representations are rejected with an explanation.
 * BASIC file editing supports the standard **68-granule** filesystem. Larger raw
   images can be transferred without assuming an extended BASIC filesystem.
-* The OS-9 browser targets classic 256-byte-sector RBF volumes in supported OS-9
-  partition entries. OS-9 floppies in type-2 banks can still be transferred as raw
-  slots, and their existing default references are retained. Individual OS-9 file
-  modification and OS-9/68k extended-sector variants are unsupported.
+* OS-9 file editing targets validated classic 256-byte-sector RBF volumes with
+  one sector per cluster. Unsupported or damaged structures remain read-only
+  where safe to browse. OS-9 floppies in type-2 banks can still be transferred as
+  raw slots, and their existing default references are retained. OS-9/68k and
+  extended-sector variants are unsupported.
 * The original floppy length/geometry is not stored in a slot. Full-slot export
   retains all 737280 logical bytes; smaller sizes explicitly omit the tail.
   Trimming trailing zero/FF bytes is not used to claim the original length.
@@ -339,6 +349,22 @@ An image edit always names a separate output, and existing outputs are protected
 .venv/bin/drivepak extract data/work/with-file.img GAME.BIN exports/extracted.bin --partition 0 --disk 3
 ```
 
+For an OS-9 volume, omit `--disk` and select the partition's table index. For
+example, if partition 2 contains a `/CMDS` directory:
+
+```bash
+.venv/bin/drivepak files original.img --partition 2 --path /CMDS
+.venv/bin/drivepak extract original.img /CMDS/GAME exports/GAME --partition 2
+.venv/bin/drivepak insert original.img edited.img exports/GAME --partition 2 --path /CMDS --name GAME2
+.venv/bin/drivepak rename-file edited.img renamed.img /CMDS/GAME2 NEWGAME --partition 2
+.venv/bin/drivepak delete-file renamed.img deleted.img /CMDS/NEWGAME --partition 2
+```
+
+Use `--replace` for an intentional replacement. The extracted file's adjacent
+metadata sidecar is verified before restoration. Each output image must be a new
+name; the source image stays untouched. See `drivepak insert --help` for
+metadata overrides.
+
 Full-slot exports are 737,280 logical bytes. Smaller explicit export sizes are
 available; the original floppy length is not encoded in the slot. Raw standard
 sector images are supported; headered JVC/DMK/VDK/HFE imports are rejected with
@@ -368,19 +394,18 @@ DRIVEPAK_REFERENCE=1 .venv/bin/python -m pytest -q -m reference
 ```
 
 Normal tests are offline and use small, independently constructed fixtures.
-Reference integration is opt-in and needs about 12 GiB of temporary free space.
+Reference integration is opt-in and needs about 16 GiB of temporary free space.
 Downloads are streamed into `data/reference/`, safely extracted and locally
 hashed; [provenance.json](docs/provenance.json) records actual sizes and SHA-256.
 Those hashes establish reproducibility, not independent publisher authentication.
 The 2 GB-labelled reference contains **1,866,210,304** image bytes.
 
-Recorded 1.1.1 validation: **157 offline tests passed and 3 reference integration
-tests passed**, with desktop startup inspection using a synthetic image. This
-includes a synthetic T&D slot-31 import that preserves defaults, padding and
-unrelated data. Automated results are not physical-hardware proof; complete
-readback and CoCoNet loading validation still need confirmation. See the
+Automated tests include synthetic fixtures, full-image reference integration,
+and desktop startup inspection. Results and reproduction commands are in
+[TESTING.md](docs/TESTING.md). Automated results are not physical-hardware proof;
+complete readback and CoCoNet loading validation still need confirmation. See the
 [spare-card checklist](docs/TESTING.md). The [card-editing safety audit](docs/AUDIT-1.1.1.md)
-records the defects found and fixed; install the 1.1.1 helper before card edits.
+records the defects found and fixed; card edits need the 1.1.1 or newer helper.
 
 No account, network service, database, cloud dependency, or telemetry is used by
 the application. Network access is used only for explicit dependency/reference

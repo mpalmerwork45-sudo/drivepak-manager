@@ -367,6 +367,171 @@ def test_gui_file_partition_and_os9_workflows(qtbot, tmp_path, os9_volume, monke
     window.close()
 
 
+def test_gui_os9_insert_replace_rename_delete(qtbot, card, os9_volume, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QCheckBox, QComboBox, QInputDialog, QLineEdit, QSpinBox
+    from drivepak_manager.filesystems.os9 import OS9
+    from drivepak_manager.image import Image
+    with Image(card, True) as image:
+        index = image.create_partition("OS9", os9_path=os9_volume)
+    original = card.read_bytes()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    monkeypatch.setattr(window, "can_replace_session", lambda: True)
+    errors = []
+    monkeypatch.setattr(window, "fail", errors.append)
+    window.open_path(card)
+    settle(qtbot, window)
+    item = next(window.tree.topLevelItem(row) for row in range(window.tree.topLevelItemCount())
+                if tuple(window.tree.topLevelItem(row).data(0, Qt.ItemDataRole.UserRole)) == (index, None))
+    window.tree.setCurrentItem(item)
+    settle(qtbot, window)
+    assert window.actions["insert"].isEnabled()
+    assert "bytes free" in window.directory_status.text()
+    source = tmp_path / "ADD.BIN"
+    source.write_bytes(b"OS9 insert\x00\xff\r\n" * 20)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **kw: (str(source), ""))
+    replacing = [False]
+    def accept_insert(dialog):
+        assert dialog.windowTitle() == "Insert OS-9 file"
+        lines = [line for line in dialog.findChildren(QLineEdit) if not isinstance(line.parent(), QSpinBox)]
+        lines[0].setText("ADDED")
+        for checkbox in dialog.findChildren(QCheckBox):
+            if checkbox.text().startswith("Replace"):
+                checkbox.setChecked(replacing[0])
+            if checkbox.text() == "Set owner explicitly" and not replacing[0]:
+                checkbox.setChecked(True)
+        if not replacing[0]:
+            dialog.findChild(QComboBox).setCurrentIndex(2)  # executable preset
+            next(spin for spin in dialog.findChildren(QSpinBox) if not spin.prefix()).setValue(0x4567)
+        return QDialog.DialogCode.Accepted
+    monkeypatch.setattr(QDialog, "exec", accept_insert)
+    window.actions["insert"].trigger()
+    qtbot.waitUntil(lambda: bool(errors) or (window.worker is None and window.files.rowCount() == 2), timeout=15000)
+    assert not errors
+    added = OS9(window.session.image.volume(index)).resolve("/ADDED")
+    assert added.attributes == 0x3F and added.raw_fd[1:3] == b"\x45\x67"
+    replacing[0] = True
+    source.write_bytes(b"replacement without text conversion\x00\xff\r\n")
+    window.actions["insert"].trigger()
+    settle(qtbot, window)
+    qtbot.waitUntil(lambda: window.worker is None and window.files.rowCount() == 2, timeout=15000)
+    added = OS9(window.session.image.volume(index)).resolve("/ADDED")
+    assert added.attributes == 0x3F and added.raw_fd[1:3] == b"\x45\x67"
+    def select(name):
+        row = next(row for row in range(window.files.rowCount()) if window.files.item(row, 0).text() == name)
+        window.files.selectRow(row)
+    select("ADDED")
+    assert window.actions["rename_file"].isEnabled() and window.actions["delete_file"].isEnabled()
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **kw: ("RENAMED", True))
+    window.actions["rename_file"].trigger()
+    qtbot.waitUntil(lambda: bool(errors) or (window.worker is None and any(window.files.item(row, 0).text() == "RENAMED" for row in range(window.files.rowCount()))), timeout=15000)
+    assert not errors
+    select("RENAMED")
+    extracted = tmp_path / "os9-extract"
+    extracted.mkdir()
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **kw: str(extracted))
+    window.actions["extract"].trigger()
+    settle(qtbot, window)
+    assert (extracted / "RENAMED").read_bytes() == source.read_bytes()
+    select("RENAMED")
+    window.actions["delete_file"].trigger()
+    qtbot.waitUntil(lambda: bool(errors) or (window.worker is None and window.files.rowCount() == 1), timeout=15000)
+    assert not errors
+    assert window.files.item(0, 0).text() == "HELLO"
+    assert [file.name for file in OS9(window.session.image.volume(index)).list_dir()] == ["HELLO"]
+    assert window.session.changes and card.read_bytes() == original
+    window.close()
+
+
+def test_gui_os9_invalid_allocation_keeps_extraction_available(qtbot, card, os9_volume, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from drivepak_manager.image import Image
+    with Image(card, True) as image:
+        index = image.create_partition("OS9", os9_path=os9_volume)
+        with image.transaction():
+            image.volume(index).write(256, bytes(4))
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    window.open_path(card)
+    settle(qtbot, window)
+    item = next(window.tree.topLevelItem(row) for row in range(window.tree.topLevelItemCount())
+                if tuple(window.tree.topLevelItem(row).data(0, Qt.ItemDataRole.UserRole)) == (index, None))
+    window.tree.setCurrentItem(item)
+    settle(qtbot, window)
+    assert window.files.item(0, 0).text() == "HELLO"
+    assert not window.actions["insert"].isEnabled()
+    assert "File editing disabled:" in window.directory_status.text()
+    window.files.selectRow(0)
+    assert window.actions["extract"].isEnabled()
+    assert not window.actions["rename_file"].isEnabled() and not window.actions["delete_file"].isEnabled()
+    window.close()
+
+
+def test_gui_os9_subdirectory_editing_stays_in_directory(qtbot, card, os9_nested_volume, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QInputDialog
+    from drivepak_manager.filesystems.os9 import OS9
+    from drivepak_manager.image import Image
+    with Image(card, True) as image:
+        index = image.create_partition("OS9", os9_path=os9_nested_volume)
+    before = card.read_bytes()
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.settings.setValue("work_dir", str(tmp_path / "work"))
+    monkeypatch.setattr(window, "can_replace_session", lambda: True)
+    errors = []
+    monkeypatch.setattr(window, "fail", errors.append)
+    window.open_path(card)
+    settle(qtbot, window)
+    beats = []
+    timer = QTimer()
+    timer.timeout.connect(lambda: beats.append(1))
+    timer.start(5)
+    validate = OS9.validate_for_edit
+    def slow_validation(*args, **kw):
+        time.sleep(0.1)
+        return validate(*args, **kw)
+    monkeypatch.setattr(OS9, "validate_for_edit", slow_validation)
+    item = next(window.tree.topLevelItem(row) for row in range(window.tree.topLevelItemCount())
+                if tuple(window.tree.topLevelItem(row).data(0, Qt.ItemDataRole.UserRole)) == (index, None))
+    window.tree.setCurrentItem(item)
+    settle(qtbot, window)
+    assert len(beats) >= 4
+    row = next(row for row in range(window.files.rowCount()) if window.files.item(row, 0).text() == "CMDS")
+    window.files.selectRow(row)
+    assert not window.actions["rename_file"].isEnabled()
+    assert not window.actions["delete_file"].isEnabled()
+    assert not window.actions["extract"].isEnabled()
+    assert window.actions["insert"].isEnabled()
+    window.file_activated(window.files.item(row, 0))
+    settle(qtbot, window)
+    assert window.os9_path == "/CMDS" and window.files.rowCount() == 0
+    source = tmp_path / "PROGRAM"
+    source.write_bytes(b"\x00\xff\r\n" * 25)
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **kw: (str(source), ""))
+    monkeypatch.setattr(QDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+    window.actions["insert"].trigger()
+    qtbot.waitUntil(lambda: bool(errors) or (window.worker is None and window.files.rowCount() == 1), timeout=15000)
+    assert not errors and window.os9_path == "/CMDS"
+    assert window.files.item(0, 0).text() == "PROGRAM"
+    window.files.selectRow(0)
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **kw: ("UPDATED", True))
+    window.actions["rename_file"].trigger()
+    qtbot.waitUntil(lambda: bool(errors) or (window.worker is None and window.files.item(0, 0) is not None and window.files.item(0, 0).text() == "UPDATED"), timeout=15000)
+    assert not errors and window.os9_path == "/CMDS"
+    window.files.selectRow(0)
+    window.actions["delete_file"].trigger()
+    qtbot.waitUntil(lambda: bool(errors) or (window.worker is None and window.files.rowCount() == 0), timeout=15000)
+    assert not errors and window.os9_path == "/CMDS"
+    assert OS9(window.session.image.volume(index)).list_dir("/CMDS") == []
+    assert card.read_bytes() == before
+    timer.stop()
+    window.close()
+
+
 def test_gui_backup_edit_write_full_workflow_with_simulated_card(qtbot, card, tmp_path, monkeypatch):
     from types import SimpleNamespace
     import drivepak_manager.gui as gui

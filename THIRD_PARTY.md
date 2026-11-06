@@ -22,6 +22,13 @@ Research references (downloaded separately, never bundled):
 * OS-9 RBF structure definitions were checked against the NitrOS-9 project's
   [RBF documentation](https://sourceforge.net/p/nitros9/wiki/Random_Block_File_Manager/).
   No implementation code from NitrOS-9 or ToolShed is reused.
+* The OS-9 writer was researched against Tandy/Microware's OS-9 technical
+  references and [ToolShed](https://github.com/nitros9project/toolshed). ToolShed
+  was compiled locally solely as an independent generated-image validation tool.
+  The inspected checkout has no top-level license file; no reuse permission is
+  inferred from its public availability. None of its source or binaries are
+  included in DrivePak Manager. [Research provenance](docs/os9-research.json)
+  records its revision and source hashes; FORMAT.md links the technical sources.
 
 Runtime dependency: PySide6/Shiboken and Qt for Python 6.10.0 are installed from
 their separately distributed wheels. Qt/PySide components have their own

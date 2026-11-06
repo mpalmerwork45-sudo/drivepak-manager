@@ -64,8 +64,12 @@ def os9_volume(tmp_path):
     b[6:8] = (1).to_bytes(2, "big")
     put24(b, 8, 3)
     b[31:35] = b"TES\xd4"
+    # DD.MAP is bytes, bits are MSB first and one means allocated. Keep the
+    # reserved sector 2 plus every reachable descriptor/data sector allocated.
+    b[256:260] = b"\xfe\0\0\0"
     root = 3 * 256
     b[root] = 0xBF
+    b[root + 8] = 1
     b[root + 9:root + 13] = (96).to_bytes(4, "big")
     put24(b, root + 16, 4)
     b[root + 19:root + 21] = (1).to_bytes(2, "big")
@@ -75,7 +79,10 @@ def os9_volume(tmp_path):
         put24(b, off + 29, lsn)
     fd = 5 * 256
     b[fd] = 0x1B
+    b[fd + 1:fd + 3] = b"\x12\x34"
     b[fd + 3:fd + 8] = bytes([126, 10, 31, 9, 30])
+    b[fd + 8] = 1
+    b[fd + 13:fd + 16] = bytes([99, 12, 30])
     content = b"OS9\x00\xff\x0d\x0aBINARY"
     b[fd + 9:fd + 13] = len(content).to_bytes(4, "big")
     put24(b, fd + 16, 6)
@@ -84,6 +91,28 @@ def os9_volume(tmp_path):
     p = tmp_path / "test.os9"
     p.write_bytes(b)
     return p
+
+
+@pytest.fixture
+def os9_nested_volume(os9_volume, tmp_path):
+    """An independent classic RBF volume with a writable empty /CMDS directory."""
+    raw = bytearray(os9_volume.read_bytes())
+    raw[256:260] = b"\xff\x80\0\0"  # reserve folder FD7/data8 too
+    raw[3 * 256 + 9:3 * 256 + 13] = (128).to_bytes(4, "big")
+    raw[4 * 256 + 96:4 * 256 + 100] = b"CMD\xd3"
+    put24(raw, 4 * 256 + 125, 7)
+    raw[7 * 256] = 0xbf
+    raw[7 * 256 + 8] = 1
+    raw[7 * 256 + 9:7 * 256 + 13] = (64).to_bytes(4, "big")
+    put24(raw, 7 * 256 + 16, 8)
+    raw[7 * 256 + 19:7 * 256 + 21] = (1).to_bytes(2, "big")
+    for n, name, lsn in ((0, b"\xae", 7), (1, b".\xae", 3)):
+        offset = 8 * 256 + n * 32
+        raw[offset:offset + len(name)] = name
+        put24(raw, offset + 29, lsn)
+    destination = tmp_path / "nested.os9"
+    destination.write_bytes(raw)
+    return destination
 
 
 @pytest.fixture

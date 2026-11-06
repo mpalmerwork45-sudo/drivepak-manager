@@ -1,0 +1,41 @@
+{
+  "notice": "Local source hashes establish reproducibility, not publisher authentication. Research tool only; no source or binary incorporated or distributed.",
+  "repository": "https://github.com/nitros9project/toolshed",
+  "revision": "3667a41c9605b7fcb150eace29cc7f42d460be1a",
+  "retrieved_date": "2026-11-06",
+  "version_reported": "ToolShed 2.6.1",
+  "license_review": "No top-level license file found in inspected checkout; no reuse grant assumed. Reference-only use.",
+  "validation": "Formatted and populated synthetic RBF using ToolShed; DrivePak inserted, renamed and deleted regular files; ToolShed dir/dcheck/extract independently validated the exported volumes and exact binary data. No devices used.",
+  "sources": [
+    {
+      "path": "include/os9path.h",
+      "bytes": 6977,
+      "sha256": "343fdca7080a66389686952ae88c1569076b02a9902d57a7b3a460a9c7ed1d7b"
+    },
+    {
+      "path": "librbf/librbfbitmap.c",
+      "bytes": 3977,
+      "sha256": "9f7fbc31c90959407cc1d8b683fc7cbc5639d8111a87cbfc4e2e1bff2d57de50"
+    },
+    {
+      "path": "librbf/librbfformat.c",
+      "bytes": 13564,
+      "sha256": "342962316f58004cf5122815a6123e2fa27cf238afb9330b3953ad3c52d4a0d7"
+    },
+    {
+      "path": "librbf/librbfopen.c",
+      "bytes": 20568,
+      "sha256": "47a3a31a0deec85fdcbf0592f1c8e197a28282e1a420e26360806815cc3beaa7"
+    },
+    {
+      "path": "librbf/librbfdelete.c",
+      "bytes": 6360,
+      "sha256": "bbd53bd129eb385e595ab2f0cf829a09c6f6a25d224f8c4fb5b8e7558a36b811"
+    },
+    {
+      "path": "libmisc/libmisccococonv.c",
+      "bytes": 8820,
+      "sha256": "06a481fe3c622192510aee5196aba2e927916b9dee08d2303bd14a42dd04ea8d"
+    }
+  ]
+}

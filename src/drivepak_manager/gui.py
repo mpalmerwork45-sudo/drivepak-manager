@@ -318,7 +318,7 @@ class MainWindow(QMainWindow):
         self.session = None
         self.worker = None
         self.current = None
-        self.basic_editable = False
+        self.filesystem_editable = False
         self.filesystem_readable = False
         self.os9_path = "/"
         self.backup_status = "No card backup associated with this session"
@@ -549,7 +549,9 @@ class MainWindow(QMainWindow):
                 pass
         disk = bool(part and part.kind == 2 and self.current[1] is not None)
         os9 = bool(part and part.kind in (3, 4))
-        selected = bool(self.files.selectionModel().selectedRows())
+        selected_files = self.selected_files()
+        selected = bool(selected_files)
+        regular_file = len(selected_files) == 1 and not getattr(selected_files[0], "is_dir", False)
         always = {"open", "new", "backup", "verify", "write", "recover_edits", "preferences", "guide"}
         edits = {"create_part", "rename_part", "delete_part", "default", "import_disk"}
         for key, action in self.actions.items():
@@ -557,9 +559,9 @@ class MainWindow(QMainWindow):
             if key in edits:
                 enabled = valid and (key in ("create_part", "import_disk") or part is not None)
             if key in ("insert", "rename_file", "delete_file"):
-                enabled = valid and disk and self.basic_editable and (key == "insert" or selected)
+                enabled = valid and (disk or os9) and self.filesystem_editable and (key == "insert" or regular_file)
             if key == "extract":
-                enabled = selected and (disk or os9) and self.filesystem_readable
+                enabled = selected and all(not getattr(f, "is_dir", False) for f in selected_files) and (disk or os9) and self.filesystem_readable
             if key == "export_disk":
                 enabled = disk and known
             if key in ("import_os9", "export_os9"):
@@ -582,13 +584,13 @@ class MainWindow(QMainWindow):
         self.search.setEnabled(not busy)
         self.up.setEnabled(os9 and self.os9_path != "/" and not busy)
 
-    def refresh(self, preserve=None):
+    def refresh(self, preserve=None, directory="/"):
         old = preserve or self.current
         self.tree.blockSignals(True)
         self.tree.clear()
         self.files.setRowCount(0)
         self.current = None
-        self.basic_editable = False
+        self.filesystem_editable = False
         self.filesystem_readable = False
         chosen = None
         if self.session:
@@ -633,10 +635,10 @@ class MainWindow(QMainWindow):
             chosen.setSelected(True)
         self.tree.blockSignals(False)
         if chosen:
-            self.selection_changed()
+            self.selection_changed(directory)
         self.update_actions()
 
-    def selection_changed(self):
+    def selection_changed(self, directory="/"):
         item = self.tree.currentItem()
         if not self.session or not item or self.worker:
             return
@@ -644,14 +646,14 @@ class MainWindow(QMainWindow):
         if selection == self.current:
             return
         self.current = selection
-        self.os9_path = "/"
+        self.os9_path = directory
         self.browse_current()
 
     def browse_current(self):
         if not self.current or not self.session:
             return
         pidx, disk = self.current
-        self.basic_editable = False
+        self.filesystem_editable = False
         self.filesystem_readable = False
         part = self.session.image.layout().partition(pidx)
         self.files.setRowCount(0)
@@ -674,11 +676,19 @@ class MainWindow(QMainWindow):
                 fs = DECB(self.session.image.volume(pidx, disk))
                 return (fs.files, f"{len(fs.files)} files · {fs.free_bytes:,} bytes free in standard 68 granules. " + "; ".join(fs.issues), False, not fs.issues)
             fs = OS9(self.session.image.volume(pidx))
-            return (fs.list_dir(path), f"OS-9: {fs.name} · File browsing/extraction; volume import/export. Individual file modification is outside this release.", True, False)
+            rows = fs.list_dir(path)
+            try:
+                info = fs.validate_for_edit(progress, cancel)
+                status = f"OS-9: {fs.name} · {info['free_bytes']:,} bytes free · Insert, replace, rename and delete regular files."
+                can_edit = True
+            except FormatError as e:
+                status = f"OS-9: {fs.name} · Browsing and extraction available. File editing disabled: {e}"
+                can_edit = False
+            return rows, status, True, can_edit
 
         def show(result):
             rows, status, is_os9, can_edit = result
-            self.basic_editable = can_edit
+            self.filesystem_editable = can_edit
             self.filesystem_readable = True
             self.files.setRowCount(len(rows))
             for row, f in enumerate(rows):
@@ -800,9 +810,9 @@ class MainWindow(QMainWindow):
         if self.session:
             self.run_task("Restoring working copy from unchanged original", lambda p, c: self.session.discard(p, c), lambda _: self.refresh())
 
-    def edited(self, description):
+    def edited(self, description, directory="/"):
         self.session.changed(description)
-        self.refresh()
+        self.refresh(directory=directory)
 
     def import_disks(self):
         if not self.session:
@@ -872,12 +882,21 @@ class MainWindow(QMainWindow):
             raise FormatError("Select a Disk BASIC disk.")
         return DECB(self.session.image.volume(*self.current, editing=True))
 
+    def os9_fs(self, partition):
+        return OS9(self.session.image.volume(partition, editing=True))
+
     def selected_files(self):
         return [self.files.item(i.row(), 0).data(Qt.ItemDataRole.UserRole) for i in self.files.selectionModel().selectedRows() if not self.files.isRowHidden(i.row())]
 
     def insert_file(self):
+        if not self.current or not self.session or self.worker:
+            return
         path, _ = QFileDialog.getOpenFileName(self, "Insert file bytes without text conversion")
         if not path:
+            return
+        partition, disk = self.current
+        if disk is None:
+            self.insert_os9_file(path, partition, self.os9_path)
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("Insert Disk BASIC file")
@@ -901,6 +920,59 @@ class MainWindow(QMainWindow):
             return
         filename, ftype, flag, replacing = name.text(), kind.currentIndex(), 255 if ascii_flag.isChecked() else 0, replace.isChecked()
         self.run_task("Inserting file", lambda p, c: self.basic_fs().insert(path, filename, ftype, flag, replacing), lambda _: self.edited(f"Inserted {filename} in partition {self.current[0]}, disk {self.current[1]}"))
+
+    def insert_os9_file(self, source, partition, directory):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Insert OS-9 file")
+        form = QFormLayout(dialog)
+        name = QLineEdit(Path(source).name)
+        name.setMaxLength(29)
+        replacing = QCheckBox("Replace existing file with this name")
+        permissions = QComboBox()
+        permissions.addItem("Automatic — preserve metadata; new files use data permissions", None)
+        permissions.addItem("Data file — read/write", 0x1B)
+        permissions.addItem("Executable program — read/write/execute", 0x3F)
+        permissions.addItem("Custom attributes…", "custom")
+        explicit_owner = QCheckBox("Set owner explicitly")
+        attributes = QSpinBox()
+        attributes.setRange(0, 0x7F)
+        attributes.setDisplayIntegerBase(16)
+        attributes.setPrefix("0x")
+        attributes.setValue(0x1B)
+        owner = QSpinBox()
+        owner.setRange(0, 65535)
+        attributes.setEnabled(False)
+        owner.setEnabled(False)
+        def permissions_changed():
+            value = permissions.currentData()
+            attributes.setEnabled(value == "custom")
+            if isinstance(value, int):
+                attributes.setValue(value)
+        permissions.currentIndexChanged.connect(permissions_changed)
+        explicit_owner.toggled.connect(owner.setEnabled)
+        form.addRow("Destination directory", QLabel(directory))
+        form.addRow("OS-9 filename (up to 29 characters)", name)
+        form.addRow(replacing)
+        form.addRow("Permissions", permissions)
+        form.addRow("Attributes (hex)", attributes)
+        form.addRow(explicit_owner)
+        form.addRow("Owner ID", owner)
+        note = QLabel("Bytes are copied unchanged. Verified extraction metadata is restored. Otherwise replacement keeps existing metadata; new files use attributes 0x1B and owner 0. Attributes 0x3F permit read/write/execute for owner and public.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        filename = name.text()
+        replace = replacing.isChecked()
+        attr = attributes.value() if permissions.currentIndex() != 0 else None
+        uid = owner.value() if explicit_owner.isChecked() else None
+        self.run_task("Inserting OS-9 file", lambda p, c: self.os9_fs(partition).insert(
+            source, directory=directory, name=filename, replace=replace, attributes=attr, owner=uid, progress=p, cancel=c),
+            lambda _: self.edited(f"Inserted {filename} in OS-9 directory {directory} (partition {partition})", directory))
 
     def extract_files(self):
         files = self.selected_files()
@@ -931,19 +1003,35 @@ class MainWindow(QMainWindow):
 
     def rename_file(self):
         files = self.selected_files()
-        if len(files) != 1:
+        if len(files) != 1 or getattr(files[0], "is_dir", False):
             self.fail("Select one file to rename.")
             return
-        name, ok = QInputDialog.getText(self, "Rename Disk BASIC file", "New 8.3 filename", text=files[0].name)
+        partition, disk = self.current
+        is_os9 = disk is None
+        directory = self.os9_path if is_os9 else "/"
+        name, ok = QInputDialog.getText(self, "Rename OS-9 file" if is_os9 else "Rename Disk BASIC file",
+                                      "New OS-9 filename (up to 29 characters)" if is_os9 else "New 8.3 filename", text=files[0].name)
         if ok:
-            self.run_task("Renaming file", lambda p, c: self.basic_fs().rename(files[0].name, name), lambda _: self.edited(f"Renamed {files[0].name} → {name}"))
+            if is_os9:
+                path = self.os9_path.rstrip("/") + "/" + files[0].name
+                operation = lambda p, c: self.os9_fs(partition).rename(path, name, progress=p, cancel=c)
+            else:
+                operation = lambda p, c: self.basic_fs().rename(files[0].name, name)
+            self.run_task("Renaming file", operation, lambda _: self.edited(f"Renamed {files[0].name} → {name}", directory))
 
     def delete_file(self):
         files = self.selected_files()
-        if len(files) != 1:
+        if len(files) != 1 or getattr(files[0], "is_dir", False):
             self.fail("Select one file to delete.")
             return
-        self.run_task("Deleting file in working image", lambda p, c: self.basic_fs().delete(files[0].name), lambda _: self.edited(f"Deleted {files[0].name} from disk {self.current}"))
+        partition, disk = self.current
+        directory = self.os9_path if disk is None else "/"
+        if disk is None:
+            path = self.os9_path.rstrip("/") + "/" + files[0].name
+            operation = lambda p, c: self.os9_fs(partition).delete(path, progress=p, cancel=c)
+        else:
+            operation = lambda p, c: self.basic_fs().delete(files[0].name)
+        self.run_task("Deleting file in working image", operation, lambda _: self.edited(f"Deleted {files[0].name} from partition {partition}", directory))
 
     def create_partition(self):
         dialog = QDialog(self)
@@ -1234,7 +1322,7 @@ class MainWindow(QMainWindow):
             self.run_task("Saving diagnostics", lambda p, c: write_json(path, data))
 
     def guide(self):
-        TextDialog("DrivePak Manager quick start", "Open image: selects a raw card image, verifies a separate working copy, then enables editing. Expand a partition and select a numbered disk.\n\nBack up card / Open card: select an external reader, deliberately unmount its volumes if needed, then choose independent backup storage. Every physical byte is copied and independently verified before a working image opens.\n\nImport disk(s): choose raw sector images, review each destination bank/slot and choose how a smaller disk fills the unused logical tail. Export disk(s): select one or several disk rows and choose an explicit size. The original floppy length is not stored.\n\nFiles menu: extract exact bytes plus metadata sidecars; insert, rename and delete files in validated standard Disk BASIC disks. OS-9 supports browsing/extraction and whole-volume import/export. Double-click an OS-9 directory; use Up to return.\n\nPartitions menu: add empty BASIC banks or complete OS-9 volumes; rename/delete entries and assign defaults. Deleting an entry leaves data intact and lets you reassign affected defaults.\n\nApply image edits to card (Card menu): prepare an immutable checkpoint and changed-sector recovery journal, select the exact card, review one final confirmation, then compare the full image-sized original range, write only changed sectors and independently read them back. A mismatched card is rejected. Keep the .dpp journal and its .json receipt; Recover card edits restores its before sectors if they still match either before/after bytes. A journal is not a complete card backup. This workflow uses a working image; it does not browse a physical card on demand.\n\nSave image as: saves and verifies a new image. Discard changes recreates the working copy from its unchanged original. Working files remain available after closing the app; their paths are shown above.\n\nWrite image to card: choose the source image file to READ, then select the destination SD card to WRITE. A fresh verified backup is enabled by default. Clear the backup checkbox for an explicit direct write without creating a backup; no Save dialog appears in direct mode. Review one final confirmation, authenticate the helper, and wait for independent device readback verification. Bytes beyond a shorter image are preserved.\n\nRecovery after an interrupted write: keep the earlier backup. Open that backup as an image; choose Write image to card. Take a new backup of the selected card's present state, then explicitly confirm restoring the earlier image. Never delete the only recoverable snapshot.\n\nUnsupported layouts still allow complete backup, saved copies and diagnostics. Normal development uses simulated devices; spare-card hardware validation is a separate manual step.", self).exec()
+        TextDialog("DrivePak Manager quick start", "Open image: selects a raw card image, verifies a separate working copy, then enables editing. Expand a partition and select a numbered disk.\n\nBack up card / Open card: select an external reader, deliberately unmount its volumes if needed, then choose independent backup storage. Every physical byte is copied and independently verified before a working image opens.\n\nImport disk(s): choose raw sector images, review each destination bank/slot and choose how a smaller disk fills the unused logical tail. Export disk(s): select one or several disk rows and choose an explicit size. The original floppy length is not stored.\n\nFiles menu: extract exact bytes plus metadata sidecars; insert, replace, rename and delete regular files in validated Disk BASIC disks and OS-9 volumes. OS-9 insertion uses the current directory; verified metadata sidecars restore attributes, owner and dates. Double-click an OS-9 directory; use Up to return. Whole-volume import/export is also available. Directory creation/removal is outside this release.\n\nPartitions menu: add empty BASIC banks or complete OS-9 volumes; rename/delete entries and assign defaults. Deleting an entry leaves data intact and lets you reassign affected defaults.\n\nApply image edits to card (Card menu): prepare an immutable checkpoint and changed-sector recovery journal, select the exact card, review one final confirmation, then compare the full image-sized original range, write only changed sectors and independently read them back. A mismatched card is rejected. Keep the .dpp journal and its .json receipt; Recover card edits restores its before sectors if they still match either before/after bytes. A journal is not a complete card backup. This workflow uses a working image; it does not browse a physical card on demand.\n\nSave image as: saves and verifies a new image. Discard changes recreates the working copy from its unchanged original. Working files remain available after closing the app; their paths are shown above.\n\nWrite image to card: choose the source image file to READ, then select the destination SD card to WRITE. A fresh verified backup is enabled by default. Clear the backup checkbox for an explicit direct write without creating a backup; no Save dialog appears in direct mode. Review one final confirmation, authenticate the helper, and wait for independent device readback verification. Bytes beyond a shorter image are preserved.\n\nRecovery after an interrupted write: keep the earlier backup. Open that backup as an image; choose Write image to card. Take a new backup of the selected card's present state, then explicitly confirm restoring the earlier image. Never delete the only recoverable snapshot.\n\nUnsupported layouts still allow complete backup, saved copies and diagnostics. Normal development uses simulated devices; spare-card hardware validation is a separate manual step.", self).exec()
 
     def closeEvent(self, event):
         if self.worker:

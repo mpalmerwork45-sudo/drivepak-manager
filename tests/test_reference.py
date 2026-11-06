@@ -96,3 +96,54 @@ def test_reference_changed_sector_apply_and_recovery(reference, tmp_path):
         assert hash_file(target) == hash_file(reference) == EXPECTED
     finally:
         session.close()
+
+
+def test_reference_os9_file_transfers_preserve_other_payload_and_padding(reference, tmp_path):
+    session = Session.open(reference, tmp_path / "work")
+    try:
+        image = session.image
+        partition = image.layout().partition(3)
+        fs = OS9(image.volume(3, editing=True))
+        initial = fs.validate_for_edit()
+        directory = fs.resolve("/CMDS")
+        bitmap = bytes(fs.bitmap)
+        permitted = {n for n in range(fs.sectors) if not bitmap[n // 8] & (128 >> (n % 8))}
+        permitted.update(range(1, 1 + (len(bitmap) + 255) // 256))
+        permitted.add(directory.lsn)
+        for start, count in directory.segments:
+            permitted.update(range(start, start + count))
+        source = tmp_path / "DPKTEST"
+        source.write_bytes(b"\0\xff\r\n" * 333 + bytes(range(256)))
+        fs.insert(source, directory="/CMDS", attributes=0x3F, owner=123)
+        fs.rename("/CMDS/DPKTEST", "DPKRENAMED")
+        extracted = tmp_path / "extracted"
+        fs.extract("/CMDS/DPKRENAMED", extracted)
+        assert extracted.read_bytes() == source.read_bytes()
+        current = fs.resolve("/CMDS/DPKRENAMED")
+        assert current.attributes == 0x3F and current.raw_fd[1:3] == b"\0\x7b"
+        source.write_bytes(b"replacement\0\xff" * 17)
+        fs.insert(source, directory="/CMDS", name="DPKRENAMED", replace=True)
+        again = tmp_path / "replacement"
+        fs.extract("/CMDS/DPKRENAMED", again)
+        assert again.read_bytes() == source.read_bytes()
+        fs.delete("/CMDS/DPKRENAMED")
+        assert all(f.name != "DPKRENAMED" for f in fs.list_dir("/CMDS"))
+        # Directory extent growth may keep one extra sector, but no live file
+        # allocations or header/padding bytes may change.
+        assert fs.validate_for_edit()["free_bytes"] >= initial["free_bytes"] - 256
+        with reference.open("rb") as original, session.working.open("rb") as changed:
+            offset = 0
+            while before := original.read(4 * 1024**2):
+                after = changed.read(len(before))
+                assert len(before) == len(after)
+                if before != after:
+                    for pos in range(0, len(before), 512):
+                        a, b = before[pos:pos + 512], after[pos:pos + 512]
+                        if a != b:
+                            lsn = (offset + pos) // 512 - partition.start
+                            assert lsn in permitted
+                            assert a[256:] == b[256:]
+                offset += len(before)
+        assert hash_file(reference) == EXPECTED
+    finally:
+        session.close()

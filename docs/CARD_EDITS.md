@@ -4,7 +4,7 @@ Use **Card → Apply image edits to card** after importing disks, editing BASIC
 files or changing partitions in the working image. It supports all existing
 image-editing operations, including partition creation/deletion/default changes.
 It writes only changed physical sectors and independently verifies those sectors.
-Use version 1.1.1 and its updated privileged helper. Its safety audit tightened
+Use version 1.2.0 with the 1.1.1 or newer privileged helper. The 1.1.1 safety audit tightened
 recovery correspondence and the saved-receipt checks; the 1.1.0 helper is rejected.
 
 This workflow continues to use a separate working image. It does **not** provide

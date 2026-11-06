@@ -72,16 +72,22 @@ def parser():
     x.add_argument("name", help="BASIC filename or absolute OS-9 path")
     x.add_argument("output")
     x.add_argument("--disk", type=int)
-    x = image_args("insert", edit=True, disk=True)
+    x = image_args("insert", edit=True)
+    x.add_argument("--disk", type=int, help="Disk BASIC slot; omit for an OS-9 partition")
     x.add_argument("source")
     x.add_argument("--name")
-    x.add_argument("--type", type=int, choices=range(4), default=2)
+    x.add_argument("--type", type=int, choices=range(4), help="Disk BASIC type (default 2)")
     x.add_argument("--ascii", action="store_true")
     x.add_argument("--replace", action="store_true")
-    x = image_args("rename-file", edit=True, disk=True)
+    x.add_argument("--path", default="/", help="OS-9 destination directory (default /)")
+    x.add_argument("--attributes", type=lambda value: int(value, 0), help="OS-9 attributes as decimal or hex; default metadata is preserved")
+    x.add_argument("--owner", type=lambda value: int(value, 0), help="OS-9 owner ID; default metadata is preserved")
+    x = image_args("rename-file", edit=True)
+    x.add_argument("--disk", type=int, help="Disk BASIC slot; omit for an OS-9 partition")
     x.add_argument("name")
     x.add_argument("new_name")
-    x = image_args("delete-file", edit=True, disk=True)
+    x = image_args("delete-file", edit=True)
+    x.add_argument("--disk", type=int, help="Disk BASIC slot; omit for an OS-9 partition")
     x.add_argument("name")
     x = sub.add_parser("partition-add")
     x.add_argument("image")
@@ -149,6 +155,11 @@ def selected_device(path):
 
 def execute(a):
     cmd = a.command
+    if cmd == "insert":
+        if a.disk is None and (a.type is not None or a.ascii):
+            raise FormatError("--type and --ascii describe Disk BASIC files. Omit them for OS-9; bytes are always copied unchanged.")
+        if a.disk is not None and (a.attributes is not None or a.owner is not None or a.path != "/"):
+            raise FormatError("--attributes, --owner and a destination --path apply to OS-9 files; omit --disk for OS-9.")
     if cmd == "devices":
         return discover()
     if cmd == "verify-backup":
@@ -225,11 +236,21 @@ def execute(a):
             else:
                 OS9(image.volume(a.partition)).extract(a.name, a.output, progress)
         elif cmd == "insert":
-            DECB(image.volume(a.partition, a.disk, editing=True)).insert(a.source, a.name, a.type, 255 if a.ascii else 0, a.replace)
+            if a.disk is not None:
+                DECB(image.volume(a.partition, a.disk, editing=True)).insert(a.source, a.name, a.type if a.type is not None else 2, 255 if a.ascii else 0, a.replace)
+            else:
+                OS9(image.volume(a.partition, editing=True)).insert(a.source, directory=a.path, name=a.name,
+                    replace=a.replace, attributes=a.attributes, owner=a.owner, progress=progress)
         elif cmd == "rename-file":
-            DECB(image.volume(a.partition, a.disk, editing=True)).rename(a.name, a.new_name)
+            if a.disk is not None:
+                DECB(image.volume(a.partition, a.disk, editing=True)).rename(a.name, a.new_name)
+            else:
+                OS9(image.volume(a.partition, editing=True)).rename(a.name, a.new_name, progress=progress)
         elif cmd == "delete-file":
-            DECB(image.volume(a.partition, a.disk, editing=True)).delete(a.name)
+            if a.disk is not None:
+                DECB(image.volume(a.partition, a.disk, editing=True)).delete(a.name)
+            else:
+                OS9(image.volume(a.partition, editing=True)).delete(a.name, progress=progress)
         elif cmd == "partition-add":
             return {"output": a.output, "partition_index": image.create_partition(a.name, a.disks, a.os9, progress)}
         elif cmd == "partition-rename":

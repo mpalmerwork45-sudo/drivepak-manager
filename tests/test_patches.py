@@ -332,3 +332,35 @@ def test_partition_and_file_edits_apply_byte_exactly(tmp_path):
         assert DECB(image.volume(0, 0)).files[0].name == "TEST.BIN"
     sim.apply_changes(journal, tmp_path / "recovered.json", recovery=True)
     assert target.read_bytes() == original.read_bytes()
+
+
+def test_os9_file_edits_apply_and_recover_as_exact_card_changes(tmp_path, os9_volume):
+    import shutil
+    from drivepak_manager.backup import SimulatedDevice
+    from drivepak_manager.image import Image, create_blank
+    from drivepak_manager.filesystems.os9 import OS9
+    original, modified, target, journal = [tmp_path / n for n in ("original.img", "modified.img", "target.bin", "os9-edits.dpp")]
+    create_blank(original, 4 * 1024**2, 1)
+    with Image(original, True) as image:
+        index = image.create_partition("OS9", os9_path=os9_volume)
+    shutil.copyfile(original, modified)
+    shutil.copyfile(original, target)
+    source = tmp_path / "PROGRAM"
+    source.write_bytes(b"\x87\xcd\0\xff\r\n" * 101)
+    with Image(modified, True) as image:
+        fs = OS9(image.volume(index, editing=True))
+        fs.insert(source, attributes=0x3F)
+        fs.rename("/PROGRAM", "RUNME")
+        fs.delete("/HELLO")
+    info = prepare_changes(original, modified, journal)
+    sim = SimulatedDevice(target)
+    assert sim.apply_changes(journal, str(journal) + ".json", expected_journal=info["journal_sha256"])["status"] == "verified"
+    assert target.read_bytes() == modified.read_bytes()
+    with Image(target) as image:
+        fs = OS9(image.volume(index))
+        assert [f.name for f in fs.list_dir()] == ["RUNME"]
+        output = tmp_path / "extracted"
+        fs.extract("/RUNME", output)
+        assert output.read_bytes() == source.read_bytes()
+    assert sim.apply_changes(journal, tmp_path / "recovered.json", recovery=True)["status"] == "verified"
+    assert target.read_bytes() == original.read_bytes()
